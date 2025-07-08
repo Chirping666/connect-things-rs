@@ -6,14 +6,14 @@ use core::cell::{BorrowMutError, Ref, RefCell};
 
 pub struct ThingsAndConnections<D> {
     things: Vec<Rc<RefCell<Thing<D>>>>,
-    connection: Vec<Rc<RefCell<Connection<D>>>>,
+    connections: Vec<Rc<RefCell<Connection<D>>>>,
 }
 
 impl<D> ThingsAndConnections<D> {
     pub fn new() -> ThingsAndConnections<D> {
         ThingsAndConnections {
             things: Vec::new(),
-            connection: Vec::new(),
+            connections: Vec::new(),
         }
     }
 
@@ -38,7 +38,7 @@ impl<D> ThingsAndConnections<D> {
         let mut second = to.try_borrow_mut()?;
         first.add_connection(edge.clone());
         second.add_connection(edge.clone());
-        self.connection.push(edge.clone());
+        self.connections.push(edge.clone());
         Ok(edge)
     }
 
@@ -55,8 +55,16 @@ impl<D> ThingsAndConnections<D> {
         let mut second = nodes[1].try_borrow_mut()?;
         first.add_connection(edge.clone());
         second.add_connection(edge.clone());
-        self.connection.push(edge.clone());
+        self.connections.push(edge.clone());
         Ok(edge)
+    }
+
+    pub fn get_things(&self) -> &[Rc<RefCell<Thing<D>>>] {
+        &self.things
+    }
+
+    pub fn get_connections(&self) -> &[Rc<RefCell<Connection<D>>>] {
+        &self.connections
     }
 
     pub fn find_thing(&self, finder: fn(Ref<Thing<D>>) -> bool) -> Option<Rc<RefCell<Thing<D>>>> {
@@ -71,7 +79,7 @@ impl<D> ThingsAndConnections<D> {
     }
 
     pub fn find_connection(&self, finder: fn(Ref<Connection<D>>) -> bool) -> Option<Rc<RefCell<Connection<D>>>> {
-        for edge in self.connection.iter() {
+        for edge in self.connections.iter() {
             if let Ok(edge_ref) = edge.try_borrow() {
                 if finder(edge_ref) {
                     return Some(edge.clone());
@@ -95,7 +103,7 @@ impl<D> ThingsAndConnections<D> {
 
     pub fn filter_connections(&self, filter: fn(Ref<Connection<D>>) -> bool) -> Vec<Rc<RefCell<Connection<D>>>> {
         let mut edges = Vec::new();
-        for edge in self.connection.iter() {
+        for edge in self.connections.iter() {
             if let Ok(edge_ref) = edge.try_borrow() {
                 if filter(edge_ref) {
                     edges.push(edge.clone());
