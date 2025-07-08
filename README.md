@@ -17,11 +17,13 @@ fn main() {
     let mut things_and_connections
         = ThingsAndConnections::<MyData>::new();
 
-    let alice: Rc<RefCell<MyData>>
+    let alice: Arc<RwLock<MyData>>
         = things_and_connections.new_thing(Alice);
     
     let bob = things_and_connections.new_thing(Bob);
     
+    /// Will block the thread until the connection
+    /// can be added.
     let friendship = things_and_connections
         .new_undirected_connection(
             [alice.clone(),bob.clone()],
@@ -35,5 +37,3 @@ fn main() {
 ### Todo
 - Make documentation.
 - Possibly add more methods to interact with things and connections.
-- Make threadsafe, using `lock_api`.
-- Make `alloc` use optional (maybe).
