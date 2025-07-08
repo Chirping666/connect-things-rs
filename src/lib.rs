@@ -228,7 +228,7 @@ mod tests {
         drop(alice);
         drop(bob);
 
-        let alice = graph
+        let _alice = graph
             .find_thing(|node| node.get_data().eq(&"Alice"))
             .unwrap();
     }
