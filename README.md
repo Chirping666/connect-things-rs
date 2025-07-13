@@ -26,9 +26,22 @@ fn main() {
     
     let relationship = things_and_connections
         .new_undirected_connection(
-            [alice.clone(),bob.clone()],
+            [alice,bob],
             Friends
-        ); 
+        );
+    
+    // What is the nature of the relationship
+    // between Alice and Bob?
+    
+    let alice = things.find_thing(|thing| {
+       thing.access_data(|data| {
+            matches!(data,Alice)
+        })
+    });
+    
+    let friends = alice.find_connection(|connection| {
+       matches!(connection.directed_towards(),Bob)
+    }).unwrap();
 }
 
 
