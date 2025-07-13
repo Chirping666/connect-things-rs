@@ -1,5 +1,5 @@
 # Connect Things
-A `no_std` + `alloc` compatible crate for connecting things to other things.
+A `no_std` + `alloc` compatible and threadsafe lib for connecting things to other things.
 
 ## Example
 ```rust

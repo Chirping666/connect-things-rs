@@ -1,381 +1,430 @@
 #![no_std]
 extern crate alloc;
-use alloc::sync::Arc;
+use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::ops::Deref;
-use spin::rwlock::RwLock;
 
-pub struct ThingsAndConnections<D> {
-    things: Vec<Arc<RwLock<Thing<D>>>>,
-    connections: Vec<Arc<RwLock<Connection<D>>>>,
+use core::cell::RefCell;
+
+pub struct Thing<T, C> {
+    inner: Rc<RefCell<ThingInner<T, C>>>,
 }
 
-impl<D> ThingsAndConnections<D> {
-    pub fn new() -> ThingsAndConnections<D> {
-        ThingsAndConnections {
+struct ThingInner<T, C> {
+    connections: Vec<Connection<T, C>>,
+    data: T,
+    exists: bool,
+}
+
+impl<T, C> ThingInner<T, C> {
+    pub fn new(data: T) -> Self {
+        ThingInner {
+            connections: Vec::new(),
+            data,
+            exists: true,
+        }
+    }
+
+    fn get_data(&self) -> &T {
+        &self.data
+    }
+
+    fn get_data_mut(&mut self) -> &mut T {
+        &mut self.data
+    }
+}
+
+impl<T, C> Thing<T, C> {
+    pub fn new(data: T) -> Self {
+        Thing {
+            inner: Rc::new(RefCell::new(ThingInner::new(data))),
+        }
+    }
+
+    pub fn add_connection(&self, connection: Connection<T, C>) {
+        let mut inner = self.inner.borrow_mut();
+        inner.connections.push(connection);
+    }
+
+    pub fn find_connection(&self, find: fn(&Connection<T, C>) -> bool) -> Option<Connection<T, C>> {
+        let inner = self.inner.try_borrow().unwrap();
+        for conn in inner.connections.iter() {
+            if find(conn) {
+                return Some((*conn).clone());
+            }
+        }
+        None
+    }
+
+    pub fn find_connections(&self, find: fn(&Connection<T, C>) -> bool) -> Vec<Connection<T, C>> {
+        let mut connections = Vec::new();
+        let inner = self.inner.borrow();
+        for conn in inner.connections.iter() {
+            if find(conn) {
+                connections.push(conn.clone())
+            }
+        }
+        connections
+    }
+
+    pub fn remove_connections(&mut self, remove: fn(&Connection<T, C>) -> bool) {
+        let mut inner = self.inner.borrow_mut();
+        inner.connections.retain(|c| !remove(c))
+    }
+
+    pub fn access_data<R>(&self, access: fn(&T) -> R) -> R {
+        let inner = self.inner.try_borrow().unwrap();
+        access(inner.get_data())
+    }
+
+    pub fn access_data_mut<R>(&self, access: fn(&mut T) -> R) -> R {
+        let mut inner = self.inner.borrow_mut();
+        access(inner.get_data_mut())
+    }
+
+    fn exists(&self) -> bool {
+        let inner = self.inner.borrow();
+        inner.exists
+    }
+
+    fn kill(&self) {
+        let mut inner = self.inner.borrow_mut();
+        for connection in inner.connections.iter() {
+            connection.kill();
+        }
+        inner.exists = false;
+    }
+}
+
+impl<T, C> Clone for Thing<T, C> {
+    fn clone(&self) -> Self {
+        Thing {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+pub struct Connection<T, C> {
+    inner: Rc<RefCell<ConnectionInner<T, C>>>,
+}
+
+enum ConnectionInner<T, C> {
+    Directed {
+        from: Thing<T, C>,
+        to: Thing<T, C>,
+        data: C,
+        exists: bool,
+    },
+    Undirected {
+        things: [Thing<T, C>; 2],
+        data: C,
+        exists: bool,
+    },
+}
+
+impl<T, C> ConnectionInner<T, C> {
+    fn new_directed(from: Thing<T, C>, to: Thing<T, C>, data: C) -> Self {
+        Self::Directed {
+            from,
+            to,
+            data,
+            exists: true,
+        }
+    }
+
+    fn new_undirected(things: [Thing<T, C>; 2], data: C) -> Self {
+        Self::Undirected {
+            things,
+            data,
+            exists: true,
+        }
+    }
+
+    fn get_things(&self) -> [Thing<T, C>; 2] {
+        match self {
+            &ConnectionInner::Directed {
+                ref from, ref to, ..
+            } => [from.clone(), to.clone()],
+            &ConnectionInner::Undirected { ref things, .. } => {
+                [things[0].clone(), things[1].clone()]
+            }
+        }
+    }
+
+    fn get_data(&self) -> &C {
+        match self {
+            &ConnectionInner::Directed { ref data, .. } => data,
+            &ConnectionInner::Undirected { ref data, .. } => data,
+        }
+    }
+
+    fn get_data_mut(&mut self) -> &mut C {
+        match self {
+            &mut ConnectionInner::Directed { ref mut data, .. } => data,
+            &mut ConnectionInner::Undirected { ref mut data, .. } => data,
+        }
+    }
+
+    fn exists(&self) -> bool {
+        match self {
+            &ConnectionInner::Directed { ref exists, .. } => *exists,
+            &ConnectionInner::Undirected { ref exists, .. } => *exists,
+        }
+    }
+
+    fn kill(&mut self) {
+        match self {
+            &mut ConnectionInner::Directed { ref mut exists, .. } => {
+                *exists = false;
+            }
+            &mut ConnectionInner::Undirected { ref mut exists, .. } => {
+                *exists = false;
+            }
+        }
+    }
+}
+
+impl<T, C> Connection<T, C> {
+    pub fn new_directed(from: Thing<T, C>, to: Thing<T, C>, data: C) -> Connection<T, C> {
+        Connection {
+            inner: Rc::new(RefCell::new(ConnectionInner::new_directed(from, to, data))),
+        }
+    }
+
+    pub fn new_undirected(things: [Thing<T, C>; 2], data: C) -> Connection<T, C> {
+        Connection {
+            inner: Rc::new(RefCell::new(ConnectionInner::new_undirected(things, data))),
+        }
+    }
+
+    pub fn is_directed(&self) -> bool {
+        let inner = self.inner.borrow();
+        matches!(*inner, ConnectionInner::Directed { .. })
+    }
+
+    pub fn is_undirected(&self) -> bool {
+        let inner = self.inner.borrow();
+        matches!(*inner, ConnectionInner::Undirected { .. })
+    }
+
+    pub fn access_data<R>(&self, access: fn(&C) -> R) -> R {
+        let inner = self.inner.borrow();
+        access(inner.get_data())
+    }
+
+    pub fn access_data_mut<R>(&self, access: fn(&mut C) -> R) -> R {
+        let mut inner = self.inner.borrow_mut();
+        access(inner.get_data_mut())
+    }
+
+    pub fn connected_things(&self) -> [Thing<T, C>; 2] {
+        let inner = self.inner.borrow();
+        inner.get_things().clone()
+    }
+
+    pub fn connects_from(&self) -> Thing<T, C> {
+        let inner = self.inner.borrow();
+        inner.get_things()[0].clone()
+    }
+
+    pub fn connects_to(&self) -> Thing<T, C> {
+        let inner = self.inner.borrow();
+        inner.get_things()[1].clone()
+    }
+
+    fn exists(&self) -> bool {
+        let inner = self.inner.borrow();
+        inner.exists()
+    }
+
+    fn kill(&self) {
+        let mut inner = self.inner.borrow_mut();
+        let things = inner.get_things();
+        for thing in things {
+            thing.kill();
+        }
+        inner.kill();
+    }
+}
+
+impl<T, C> Clone for Connection<T, C> {
+    fn clone(&self) -> Self {
+        Connection {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+pub struct Things<T, C> {
+    things: Vec<Thing<T, C>>,
+    connections: Vec<Connection<T, C>>,
+}
+
+impl<T, C> Things<T, C> {
+    pub fn new() -> Things<T, C> {
+        Things {
             things: Vec::new(),
             connections: Vec::new(),
         }
     }
 
-    pub fn new_thing(&mut self, data: D) -> Arc<RwLock<Thing<D>>> {
-        let node = Arc::new(RwLock::new(Thing::new(data)));
-        self.things.push(node.clone());
-        node
+    pub fn new_thing(&mut self, data: T) -> Thing<T, C> {
+        let thing = Thing::<T, C>::new(data);
+        self.things.push(thing.clone());
+        thing
     }
 
     pub fn new_directed_connection(
         &mut self,
-        from: Arc<RwLock<Thing<D>>>,
-        to: Arc<RwLock<Thing<D>>>,
-        data: D,
-    ) -> Arc<RwLock<Connection<D>>> {
-        let edge = Arc::new(RwLock::new(Connection::new_directed(
-            from.clone(),
-            to.clone(),
-            data,
-        )));
-        let mut first = from.write();
-        let mut second = to.write();
-        first.add_connection(edge.clone());
-        second.add_connection(edge.clone());
-        self.connections.push(edge.clone());
-        edge
-    }
-
-    pub fn try_new_directed_connection(
-        &mut self,
-        from: Arc<RwLock<Thing<D>>>,
-        to: Arc<RwLock<Thing<D>>>,
-        data: D,
-    ) -> Option<Arc<RwLock<Connection<D>>>> {
-        let edge = Arc::new(RwLock::new(Connection::new_directed(
-            from.clone(),
-            to.clone(),
-            data,
-        )));
-        let first = from.try_write();
-        let second = to.try_write();
-        if let (Some(mut first), Some(mut second)) = (first, second) {
-            first.add_connection(edge.clone());
-            second.add_connection(edge.clone());
-            self.connections.push(edge.clone());
-            return Some(edge);
-        }
-        None
+        from: Thing<T, C>,
+        to: Thing<T, C>,
+        data: C,
+    ) -> Connection<T, C> {
+        let connection = Connection::<T, C>::new_directed(from.clone(), to.clone(), data);
+        from.add_connection(connection.clone());
+        to.add_connection(connection.clone());
+        self.connections.push(connection.clone());
+        connection
     }
 
     pub fn new_undirected_connection(
         &mut self,
-        nodes: [Arc<RwLock<Thing<D>>>; 2],
-        data: D,
-    ) -> Arc<RwLock<Connection<D>>> {
-        let edge = Arc::new(RwLock::new(Connection::new_undirected(
-            [nodes[0].clone(), nodes[1].clone()],
-            data,
-        )));
-        let mut first = nodes[0].write();
-        let mut second = nodes[1].write();
-        first.add_connection(edge.clone());
-        second.add_connection(edge.clone());
-        self.connections.push(edge.clone());
-        edge
+        things: [Thing<T, C>; 2],
+        data: C,
+    ) -> Connection<T, C> {
+        let connection = Connection::<T, C>::new_undirected(things.clone(), data);
+        things[0].add_connection(connection.clone());
+        things[1].add_connection(connection.clone());
+        self.connections.push(connection.clone());
+        connection
     }
 
-    pub fn try_new_undirected_connection(
-        &mut self,
-        nodes: [Arc<RwLock<Thing<D>>>; 2],
-        data: D,
-    ) -> Option<Arc<RwLock<Connection<D>>>> {
-        let edge = Arc::new(RwLock::new(Connection::new_undirected(
-            [nodes[0].clone(), nodes[1].clone()],
-            data,
-        )));
-        let first = nodes[0].try_write();
-        let second = nodes[1].try_write();
-        if let (Some(mut first), Some(mut second)) = (first, second) {
-            first.add_connection(edge.clone());
-            second.add_connection(edge.clone());
-            self.connections.push(edge.clone());
-            return Some(edge);
-        }
-        None
-    }
-
-    pub fn get_things(&self) -> &[Arc<RwLock<Thing<D>>>] {
-        &self.things
-    }
-
-    pub fn get_connections(&self) -> &[Arc<RwLock<Connection<D>>>] {
-        &self.connections
-    }
-
-    pub fn find_thing(&self, finder: fn(&Thing<D>) -> bool) -> Option<Arc<RwLock<Thing<D>>>> {
-        for node in self.things.iter() {
-            let node_guard = node.read();
-            if finder(node_guard.deref()) {
-                return Some(node.clone());
+    pub fn find_thing(&self, search: fn(&Thing<T, C>) -> bool) -> Option<Thing<T, C>> {
+        for thing in &self.things {
+            if search(thing) {
+                return Some(thing.clone());
             }
         }
         None
     }
 
-    pub fn try_find_thing(&self, finder: fn(&Thing<D>) -> bool) -> Option<Arc<RwLock<Thing<D>>>> {
-        for node in self.things.iter() {
-            if let Some(node_guard) = node.try_read() {
-                if finder(node_guard.deref()) {
-                    return Some(node.clone());
-                }
+    pub fn find_things(&self, find: fn(&Thing<T, C>) -> bool) -> Vec<Thing<T, C>> {
+        let mut things = Vec::new();
+        for thing in &self.things {
+            if find(thing) {
+                things.push(thing.clone());
             }
         }
-        None
+        things
+    }
+
+    pub fn remove_things(&mut self, remove: fn(&Thing<T, C>) -> bool) {
+        self.things.retain(|thing| {
+            if remove(thing) {
+                thing.kill();
+                false
+            } else {
+                true
+            }
+        });
     }
 
     pub fn find_connection(
         &self,
-        finder: fn(&Connection<D>) -> bool,
-    ) -> Option<Arc<RwLock<Connection<D>>>> {
-        for edge in self.connections.iter() {
-            let edge_guard = edge.read();
-            if finder(edge_guard.deref()) {
-                return Some(edge.clone());
+        search: fn(&Connection<T, C>) -> bool,
+    ) -> Option<Connection<T, C>> {
+        for connection in &self.connections {
+            if search(connection) {
+                return Some(connection.clone());
             }
         }
         None
     }
 
-    pub fn try_find_connection(
-        &self,
-        finder: fn(&Connection<D>) -> bool,
-    ) -> Option<Arc<RwLock<Connection<D>>>> {
-        for edge in self.connections.iter() {
-            if let Some(edge_guard) = edge.try_read() {
-                if finder(edge_guard.deref()) {
-                    return Some(edge.clone());
-                }
+    pub fn find_connections(&self, search: fn(&Connection<T, C>) -> bool) -> Vec<Connection<T, C>> {
+        let mut connections = Vec::new();
+        for connection in &self.connections {
+            if search(connection) {
+                connections.push(connection.clone());
             }
         }
-        None
+        connections
     }
 
-    pub fn filter_things(&self, filter: fn(&Thing<D>) -> bool) -> Vec<Arc<RwLock<Thing<D>>>> {
-        let mut nodes = Vec::new();
-        for node in self.things.iter() {
-            let node_guard = node.read();
-            if filter(node_guard.deref()) {
-                nodes.push(node.clone());
+    pub fn remove_connections(&mut self, delete: fn(&Connection<T, C>) -> bool) {
+        self.connections.retain(|connection| {
+            if delete(connection) {
+                connection.kill();
+                false
+            } else {
+                true
             }
-        }
-        nodes
+        });
     }
 
-    pub fn try_filter_things(&self, filter: fn(&Thing<D>) -> bool) -> Vec<Arc<RwLock<Thing<D>>>> {
-        let mut nodes = Vec::new();
-        for node in self.things.iter() {
-            if let Some(node_guard) = node.try_read() {
-                if filter(node_guard.deref()) {
-                    nodes.push(node.clone());
-                }
-            }
-        }
-        nodes
-    }
+    pub fn clean(&mut self) {
+        self.things.retain(|thing| thing.exists());
 
-    pub fn filter_connections(
-        &self,
-        filter: fn(&Connection<D>) -> bool,
-    ) -> Vec<Arc<RwLock<Connection<D>>>> {
-        let mut edges = Vec::new();
-        for edge in self.connections.iter() {
-            let edge_guard = edge.read();
-            if filter(edge_guard.deref()) {
-                edges.push(edge.clone());
-            }
-        }
-        edges
-    }
-
-    pub fn try_filter_connections(
-        &self,
-        filter: fn(&Connection<D>) -> bool,
-    ) -> Vec<Arc<RwLock<Connection<D>>>> {
-        let mut edges = Vec::new();
-        for edge in self.connections.iter() {
-            if let Some(edge_guard) = edge.try_read() {
-                if filter(edge_guard.deref()) {
-                    edges.push(edge.clone());
-                }
-            }
-        }
-        edges
-    }
-}
-
-pub struct Thing<D> {
-    connections: Vec<Arc<RwLock<Connection<D>>>>,
-    data: D,
-}
-
-impl<D> Thing<D> {
-    pub fn new(data: D) -> Self {
-        Thing {
-            connections: Vec::new(),
-            data,
-        }
-    }
-
-    pub fn add_connection(&mut self, edge: Arc<RwLock<Connection<D>>>) {
-        self.connections.push(edge);
-    }
-
-    pub fn get_connections(&self) -> &[Arc<RwLock<Connection<D>>>] {
-        &self.connections
-    }
-
-    pub fn find_connection(
-        &self,
-        finder: fn(&Connection<D>) -> bool,
-    ) -> Option<Arc<RwLock<Connection<D>>>> {
-        for edge in self.connections.iter() {
-            let edge_lock_read = edge.read();
-            if finder(edge_lock_read.deref()) {
-                return Some(edge.clone());
-            }
-        }
-        None
-    }
-
-    pub fn try_find_connection(
-        &self,
-        finder: fn(&Connection<D>) -> bool,
-    ) -> Option<Arc<RwLock<Connection<D>>>> {
-        for edge in self.connections.iter() {
-            if let Some(edge_lock_read) = edge.try_read() {
-                if finder(edge_lock_read.deref()) {
-                    return Some(edge.clone());
-                }
-            }
-        }
-        None
-    }
-
-    pub fn get_data(&self) -> &D {
-        &self.data
-    }
-
-    pub fn get_data_mut(&mut self) -> &mut D {
-        &mut self.data
-    }
-}
-
-pub enum Connection<D> {
-    Directed {
-        from: Arc<RwLock<Thing<D>>>,
-        to: Arc<RwLock<Thing<D>>>,
-        data: D,
-    },
-    Undirected {
-        nodes: [Arc<RwLock<Thing<D>>>; 2],
-        data: D,
-    },
-}
-
-impl<D> Connection<D> {
-    pub fn new_directed(from: Arc<RwLock<Thing<D>>>, to: Arc<RwLock<Thing<D>>>, data: D) -> Self {
-        Connection::Directed { from, to, data }
-    }
-
-    pub fn new_undirected(nodes: [Arc<RwLock<Thing<D>>>; 2], data: D) -> Self {
-        Connection::Undirected { nodes, data }
-    }
-
-    pub fn get_things(&self) -> (Arc<RwLock<Thing<D>>>, Arc<RwLock<Thing<D>>>) {
-        match self {
-            Connection::Directed { from, to, .. } => (from.clone(), to.clone()),
-            Connection::Undirected { nodes, .. } => (nodes[0].clone(), nodes[1].clone()),
-        }
-    }
-
-    pub fn get_data(&self) -> &D {
-        match self {
-            Connection::Directed { data, .. } => data,
-            Connection::Undirected { data, .. } => data,
-        }
-    }
-
-    pub fn get_data_mut(&mut self) -> &mut D {
-        match self {
-            Connection::Directed { data, .. } => data,
-            Connection::Undirected { data, .. } => data,
-        }
+        self.connections.retain(|connection| connection.exists())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+
+    fn test_graph<'a>() -> Things<&'a str, &'a str> {
+        let mut graph = Things::<&str, &str>::new();
+
+        let apple = graph.new_thing("Apple");
+
+        let apples = graph.new_thing("Apples");
+
+        graph.new_directed_connection(apples.clone(), apple.clone(), "plural of");
+
+        let pear = graph.new_thing("Pear");
+
+        let pears = graph.new_thing("Pears");
+
+        graph.new_directed_connection(pears.clone(), pear.clone(), "plural of");
+
+        let alice = graph.new_thing("Alice");
+
+        graph.new_directed_connection(alice.clone(), apples, "likes to eat");
+
+        graph.new_directed_connection(alice, pears, "doesn't like to eat");
+
+        let fruit = graph.new_thing("Fruit");
+
+        graph.new_directed_connection(apple, fruit.clone(), "is");
+
+        graph.new_directed_connection(pear, fruit, "is");
+
+        graph
+    }
 
     #[test]
     fn it_works() {
-        let alice = Arc::new(RwLock::new(Thing::new("Alice")));
-        let bob = Arc::new(RwLock::new(Thing::new("Bob")));
+        let graph = test_graph();
 
-        let relationship = Arc::new(RwLock::new(Connection::new_undirected(
-            [alice.clone(), bob.clone()],
-            "friends",
-        )));
+        // What does Alice like to eat?
 
-        let mut alice_node = alice.write();
-        let mut bob_node = bob.write();
-
-        alice_node.add_connection(Arc::clone(&relationship));
-        bob_node.add_connection(Arc::clone(&relationship));
-    }
-
-    #[test]
-    fn graph_works() {
-        let mut graph = ThingsAndConnections::<&str>::new();
-
-        let alice = graph.new_thing("Alice");
-        let bob = graph.new_thing("Bob");
-
-        graph.new_undirected_connection([alice.clone(), bob.clone()], "Alice");
-        graph.new_directed_connection(bob.clone(), alice.clone(), "admires");
-
-        drop(alice);
-        drop(bob);
-
-        let _alice = graph.find_thing(|node| node.get_data().eq(&"Alice"));
-    }
-
-    #[test]
-    fn more_complicated_graph() {
-        let mut graph = ThingsAndConnections::<&str>::new();
-        // I have a brick. The brick is yellow. I also have a hat. The hat is black.
-
-        let first_person = graph.new_thing("FirstPerson");
-        let brick = graph.new_thing("Brick");
-        let hat = graph.new_thing("Hat");
-        let color = graph.new_thing("Color");
-        let yellow = graph.new_thing("Yellow");
-        let black = graph.new_thing("Black");
-
-        graph.new_directed_connection(first_person.clone(), brick.clone(), "has");
-        graph.new_directed_connection(brick.clone(), yellow.clone(), "is");
-        graph.new_directed_connection(yellow.clone(), color.clone(), "is");
-        graph.new_directed_connection(black.clone(), color.clone(), "is");
-        graph.new_directed_connection(hat.clone(), black.clone(), "is");
-        graph.new_directed_connection(first_person.clone(), hat.clone(), "has");
-
-        drop(first_person);
-        drop(brick);
-        drop(hat);
-        drop(color);
-        drop(yellow);
-        drop(black);
-
-        let brick = graph
-            .find_thing(|thing| thing.get_data().eq(&"Brick"))
+        let alice = graph
+            .find_thing(|thing| thing.access_data(|data| *data == "Alice"))
             .unwrap();
+
+        let thing_alice_likes_to_eat = alice
+            .find_connection(|connection| connection.access_data(|data| *data == "likes to eat"))
+            .unwrap()
+            .connects_to();
+
+        let answer = format!(
+            "The thing alice likes to eat is: {}.",
+            thing_alice_likes_to_eat
+                .access_data(|data| { *data })
+                .to_ascii_lowercase()
+        );
+
+        assert_eq!("The thing alice likes to eat is: apples.", &answer);
     }
 }
