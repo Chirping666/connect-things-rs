@@ -1,20 +1,24 @@
 # Connect Things
-A `no_std` + `alloc` compatible and threadsafe lib for connecting things to other things.
+A `no_std` + `alloc` compatible crate for connecting things to other things.
 
 ## Example
 ```rust
 use connect_things::*;
 
-enum MyData {
+enum ThingData {
     Alice,
-    Bob,
+    Bob
+}
+
+enum ConnectionData {
     Friends
 }
 
 fn main() {
-    use MyData::*;
+    use ThingData::*;
+    use ConnectionData::*;
 
-    let mut things_and_connections = ThingsAndConnections::<MyData>::new();
+    let mut things = Things::<ThingData,ConnectionData>::new();
 
     let alice = things_and_connections.new_thing(Alice);
     
