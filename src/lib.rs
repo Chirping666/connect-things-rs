@@ -166,18 +166,22 @@ impl<T, C> ConnectionInner<T, C> {
 
     fn is_alive(&self) -> bool {
         match self {
-            &ConnectionInner::Directed { is_alive: ref exists, .. } => *exists,
-            &ConnectionInner::Undirected { is_alive: ref exists, .. } => *exists,
+            &ConnectionInner::Directed { is_alive, .. } => is_alive,
+            &ConnectionInner::Undirected { is_alive, .. } => is_alive,
         }
     }
 
     fn kill(&mut self) {
         match self {
-            &mut ConnectionInner::Directed { is_alive: ref mut exists, .. } => {
-                *exists = false;
+            &mut ConnectionInner::Directed {
+                ref mut is_alive, ..
+            } => {
+                *is_alive = false;
             }
-            &mut ConnectionInner::Undirected { is_alive: ref mut exists, .. } => {
-                *exists = false;
+            &mut ConnectionInner::Undirected {
+                ref mut is_alive, ..
+            } => {
+                *is_alive = false;
             }
         }
     }
@@ -265,7 +269,7 @@ impl<T, C> Things<T, C> {
         Things {
             things: Vec::new(),
             connections: Vec::new(),
-            dead_amnt: 0
+            dead_amnt: 0,
         }
     }
 
@@ -359,8 +363,23 @@ impl<T, C> Things<T, C> {
         });
     }
 
-    pub fn dead_percentage(&self) -> Option<usize> {
-        self.dead_amnt.checked_mul(100)?.checked_div(self.things.len().saturating_add(self.connections.len()))
+    pub fn dead_percentage(&self) -> Result<usize, ()> {
+        let added = self
+            .things
+            .len()
+            .checked_add(self.connections.len())
+            .unwrap_or_else(|| 100);
+
+        let mulled = self.dead_amnt.checked_mul(100).unwrap_or_else(|| 100);
+
+        let dived = match mulled.checked_div(added) {
+            Some(dived) => dived,
+            None => {
+                return Err(());
+            }
+        };
+
+        Ok(dived)
     }
 
     pub fn clean(&mut self) {
@@ -424,9 +443,7 @@ mod tests {
 
         let answer = format!(
             "The thing alice likes to eat is: {}.",
-            apple
-                .access_data(|data| { *data })
-                .to_ascii_lowercase()
+            apple.access_data(|data| { *data }).to_ascii_lowercase()
         );
 
         assert_eq!("The thing alice likes to eat is: apples.", &answer);
