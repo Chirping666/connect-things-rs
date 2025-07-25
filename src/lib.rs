@@ -319,14 +319,11 @@ impl<T, C> Things<T, C> {
         things
     }
 
-    pub fn remove_things(&mut self, remove: fn(&Thing<T, C>) -> bool) {
-        self.things.retain(|thing| {
-            if remove(thing) {
+    pub fn kill_things(&mut self, kill: fn(&Thing<T, C>) -> bool) {
+        self.things.iter().for_each(|thing| {
+            if kill(thing) {
                 thing.kill();
                 let _ = self.dead_amnt.saturating_add(1);
-                false
-            } else {
-                true
             }
         });
     }
@@ -353,14 +350,11 @@ impl<T, C> Things<T, C> {
         connections
     }
 
-    pub fn remove_connections(&mut self, delete: fn(&Connection<T, C>) -> bool) {
-        self.connections.retain(|connection| {
-            if delete(connection) {
+    pub fn kill_connections(&mut self, kill: fn(&Connection<T, C>) -> bool) {
+        self.connections.iter().for_each(|connection| {
+            if kill(connection) {
                 connection.kill();
                 let _ = self.dead_amnt.saturating_add(1);
-                false
-            } else {
-                true
             }
         });
     }
