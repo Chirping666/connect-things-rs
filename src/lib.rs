@@ -230,12 +230,12 @@ impl<T, C> Connection<T, C> {
         inner.get_things().clone()
     }
 
-    pub fn directed_from(&self) -> Thing<T, C> {
+    pub fn get_directed_from(&self) -> Thing<T, C> {
         let inner = self.inner.borrow();
         inner.get_things()[0].clone()
     }
 
-    pub fn directed_towards(&self) -> Thing<T, C> {
+    pub fn get_directed_towards(&self) -> Thing<T, C> {
         let inner = self.inner.borrow();
         inner.get_things()[1].clone()
     }
@@ -440,7 +440,7 @@ mod tests {
         let apple = alice
             .find_connection(|connection| connection.access_data(|data| *data == "likes to eat"))
             .unwrap()
-            .directed_towards();
+            .get_directed_towards();
 
         let answer = format!(
             "The thing alice likes to eat is: {}.",
