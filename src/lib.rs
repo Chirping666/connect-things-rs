@@ -371,7 +371,11 @@ impl<T, C> Things<T, C> {
         let dived = match mulled.checked_div(added) {
             Some(dived) => dived,
             None => {
-                return Err(());
+                return if mulled == 0 {
+                    Ok(0)
+                } else {
+                    Err(())
+                }
             }
         };
 
