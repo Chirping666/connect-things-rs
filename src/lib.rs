@@ -242,10 +242,6 @@ impl<T, C> Connection<T, C> {
 
     fn kill(&self) {
         let mut inner = self.inner.borrow_mut();
-        let things = inner.get_things();
-        for thing in things {
-            thing.kill();
-        }
         inner.kill();
     }
 }
