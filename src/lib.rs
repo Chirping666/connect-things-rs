@@ -12,7 +12,7 @@ pub struct Thing<T, C> {
 struct ThingInner<T, C> {
     connections: Vec<Connection<T, C>>,
     data: T,
-    exists: bool,
+    is_alive: bool,
 }
 
 impl<T, C> ThingInner<T, C> {
@@ -20,7 +20,7 @@ impl<T, C> ThingInner<T, C> {
         ThingInner {
             connections: Vec::new(),
             data,
-            exists: true,
+            is_alive: true,
         }
     }
 
@@ -81,9 +81,9 @@ impl<T, C> Thing<T, C> {
         access(inner.get_data_mut())
     }
 
-    fn exists(&self) -> bool {
+    fn is_alive(&self) -> bool {
         let inner = self.inner.borrow();
-        inner.exists
+        inner.is_alive
     }
 
     fn kill(&self) {
@@ -91,7 +91,7 @@ impl<T, C> Thing<T, C> {
         for connection in inner.connections.iter() {
             connection.kill();
         }
-        inner.exists = false;
+        inner.is_alive = false;
     }
 }
 
@@ -112,12 +112,12 @@ enum ConnectionInner<T, C> {
         from: Thing<T, C>,
         to: Thing<T, C>,
         data: C,
-        exists: bool,
+        is_alive: bool,
     },
     Undirected {
         things: [Thing<T, C>; 2],
         data: C,
-        exists: bool,
+        is_alive: bool,
     },
 }
 
@@ -127,7 +127,7 @@ impl<T, C> ConnectionInner<T, C> {
             from,
             to,
             data,
-            exists: true,
+            is_alive: true,
         }
     }
 
@@ -135,7 +135,7 @@ impl<T, C> ConnectionInner<T, C> {
         Self::Undirected {
             things,
             data,
-            exists: true,
+            is_alive: true,
         }
     }
 
@@ -164,19 +164,19 @@ impl<T, C> ConnectionInner<T, C> {
         }
     }
 
-    fn exists(&self) -> bool {
+    fn is_alive(&self) -> bool {
         match self {
-            &ConnectionInner::Directed { ref exists, .. } => *exists,
-            &ConnectionInner::Undirected { ref exists, .. } => *exists,
+            &ConnectionInner::Directed { is_alive: ref exists, .. } => *exists,
+            &ConnectionInner::Undirected { is_alive: ref exists, .. } => *exists,
         }
     }
 
     fn kill(&mut self) {
         match self {
-            &mut ConnectionInner::Directed { ref mut exists, .. } => {
+            &mut ConnectionInner::Directed { is_alive: ref mut exists, .. } => {
                 *exists = false;
             }
-            &mut ConnectionInner::Undirected { ref mut exists, .. } => {
+            &mut ConnectionInner::Undirected { is_alive: ref mut exists, .. } => {
                 *exists = false;
             }
         }
@@ -231,9 +231,9 @@ impl<T, C> Connection<T, C> {
         inner.get_things()[1].clone()
     }
 
-    fn exists(&self) -> bool {
+    fn is_alive(&self) -> bool {
         let inner = self.inner.borrow();
-        inner.exists()
+        inner.is_alive()
     }
 
     fn kill(&self) {
@@ -257,6 +257,7 @@ impl<T, C> Clone for Connection<T, C> {
 pub struct Things<T, C> {
     things: Vec<Thing<T, C>>,
     connections: Vec<Connection<T, C>>,
+    dead_amnt: usize,
 }
 
 impl<T, C> Things<T, C> {
@@ -264,6 +265,7 @@ impl<T, C> Things<T, C> {
         Things {
             things: Vec::new(),
             connections: Vec::new(),
+            dead_amnt: 0
         }
     }
 
@@ -321,6 +323,7 @@ impl<T, C> Things<T, C> {
         self.things.retain(|thing| {
             if remove(thing) {
                 thing.kill();
+                let _ = self.dead_amnt.saturating_add(1);
                 false
             } else {
                 true
@@ -354,6 +357,7 @@ impl<T, C> Things<T, C> {
         self.connections.retain(|connection| {
             if delete(connection) {
                 connection.kill();
+                let _ = self.dead_amnt.saturating_add(1);
                 false
             } else {
                 true
@@ -361,10 +365,16 @@ impl<T, C> Things<T, C> {
         });
     }
 
-    pub fn clean(&mut self) {
-        self.things.retain(|thing| thing.exists());
+    pub fn dead_percentage(&self) -> Option<usize> {
+        self.dead_amnt.checked_mul(100)?.checked_div(self.things.len().saturating_add(self.connections.len()))
+    }
 
-        self.connections.retain(|connection| connection.exists())
+    pub fn clean(&mut self) {
+        self.things.retain(|thing| thing.is_alive());
+
+        self.connections.retain(|connection| connection.is_alive());
+
+        self.dead_amnt = 0;
     }
 }
 
