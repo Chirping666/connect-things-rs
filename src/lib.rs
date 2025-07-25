@@ -94,7 +94,7 @@ impl<T, C> Thing<T, C> {
             amnt += 1;
         }
         inner.is_alive = false;
-        amnt
+        amnt + 1
     }
 }
 
