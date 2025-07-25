@@ -225,19 +225,27 @@ impl<T, C> Connection<T, C> {
         access(inner.get_data_mut())
     }
 
-    pub fn connected_things(&self) -> [Thing<T, C>; 2] {
+    pub fn get_connected_things(&self) -> [Thing<T, C>; 2] {
         let inner = self.inner.borrow();
         inner.get_things().clone()
     }
 
-    pub fn get_directed_from(&self) -> Thing<T, C> {
+    pub fn get_directed_from(&self) -> Option<Thing<T, C>> {
         let inner = self.inner.borrow();
-        inner.get_things()[0].clone()
+        if self.is_directed() {
+            Some(inner.get_things()[0].clone())
+        } else {
+            None
+        }
     }
 
-    pub fn get_directed_towards(&self) -> Thing<T, C> {
+    pub fn get_directed_towards(&self) -> Option<Thing<T, C>> {
         let inner = self.inner.borrow();
-        inner.get_things()[1].clone()
+        if self.is_directed() {
+            Some(inner.get_things()[1].clone())
+        } else {
+            None
+        }
     }
 
     fn is_alive(&self) -> bool {
@@ -440,7 +448,8 @@ mod tests {
         let apple = alice
             .find_connection(|connection| connection.access_data(|data| *data == "likes to eat"))
             .unwrap()
-            .get_directed_towards();
+            .get_directed_towards()
+            .unwrap();
 
         let answer = format!(
             "The thing alice likes to eat is: {}.",
