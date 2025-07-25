@@ -86,12 +86,15 @@ impl<T, C> Thing<T, C> {
         inner.is_alive
     }
 
-    fn kill(&self) {
+    fn kill(&self) -> usize {
+        let mut amnt = 0;
         let mut inner = self.inner.borrow_mut();
         for connection in inner.connections.iter() {
             connection.kill();
+            amnt += 1;
         }
         inner.is_alive = false;
+        amnt
     }
 }
 
@@ -322,8 +325,8 @@ impl<T, C> Things<T, C> {
     pub fn kill_things(&mut self, kill: fn(&Thing<T, C>) -> bool) {
         self.things.iter().for_each(|thing| {
             if kill(thing) {
-                thing.kill();
-                let _ = self.dead_amnt.saturating_add(1);
+                let amnt = thing.kill();
+                let _ = self.dead_amnt.saturating_add(amnt);
             }
         });
     }
