@@ -90,8 +90,10 @@ impl<T, C> Thing<T, C> {
         let mut amnt = 0;
         let mut inner = self.inner.borrow_mut();
         for connection in inner.connections.iter() {
-            connection.kill();
-            amnt += 1;
+            if connection.is_alive() {
+                connection.kill();
+                amnt += 1;
+            }
         }
         inner.is_alive = false;
         amnt + 1
