@@ -364,25 +364,21 @@ impl<T, C> Things<T, C> {
         });
     }
 
-    pub fn dead_percentage(&self) -> Result<usize, ()> {
-        let added = self
+    pub fn dead_percentage(&mut self) -> Result<usize, ()> {
+        let total = self
             .things
             .len()
             .checked_add(self.connections.len())
             .unwrap_or_else(|| 100);
 
+        if total == 0 {
+            self.dead_amnt = 0;
+            return Err(());
+        }
+
         let mulled = self.dead_amnt.checked_mul(100).unwrap_or_else(|| 100);
 
-        let dived = match mulled.checked_div(added) {
-            Some(dived) => dived,
-            None => {
-                return if mulled == 0 {
-                    Ok(0)
-                } else {
-                    Err(())
-                }
-            }
-        };
+        let dived = mulled / total;
 
         Ok(dived)
     }
