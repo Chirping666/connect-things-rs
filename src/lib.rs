@@ -125,12 +125,10 @@ use core::cell::RefCell;
 ///     }
 /// }
 /// ```
-#[derive(PartialEq)]
 pub struct Thing<T, C> {
     inner: Rc<RefCell<ThingInner<T, C>>>,
 }
 
-#[derive(PartialEq)]
 struct ThingInner<T, C> {
     connections: Vec<Connection<T, C>>,
     data: T,
@@ -329,6 +327,12 @@ impl<T, C> Clone for Thing<T, C> {
     }
 }
 
+impl<T,C> PartialEq for Thing<T,C> {
+    fn eq(&self, other: &Self) -> bool {
+        self.access_data(|data| *data) == other.access_data(|data| *data)
+    }
+}
+
 /// A relationship between two things in the graph.
 ///
 /// Connections can be either directed (representing asymmetric relationships like
@@ -389,12 +393,10 @@ impl<T, C> Clone for Thing<T, C> {
 ///     // Bob is being followed
 /// }
 /// ```
-#[derive(PartialEq)]
 pub struct Connection<T, C> {
     inner: Rc<RefCell<ConnectionInner<T, C>>>,
 }
 
-#[derive(PartialEq)]
 enum ConnectionInner<T, C> {
     Directed {
         from: Thing<T, C>,
@@ -669,6 +671,12 @@ impl<T, C> Clone for Connection<T, C> {
         Connection {
             inner: self.inner.clone(),
         }
+    }
+}
+
+impl<T,C> PartialEq for Connection<T,C> {
+    fn eq(&self, other: &Self) -> bool {
+        self.access_data(|data| *data) == other.access_data(|data| *data)
     }
 }
 
