@@ -1121,7 +1121,7 @@ mod tests {
         assert_eq!("The thing alice likes to eat is: apples.", &answer);
     }
 
-    // #[test]
+    #[test]
     fn knowledge_representation_taxonomy_query() {
         let graph = test_knowledge_graph();
 
