@@ -19,9 +19,9 @@
 //!
 //! #[derive(Debug, Clone, PartialEq)]
 //! enum Concept {
-//!     Person(String),
-//!     Food(String),
-//!     Category(String),
+//!     Person(&'static str),
+//!     Food(&'static str),
+//!     Category(&'static str),
 //! }
 //!
 //! #[derive(Debug, Clone, PartialEq)]
@@ -35,36 +35,37 @@
 //!     let mut knowledge = Things::new();
 //!
 //!     // Create entities in our knowledge base
-//!     let alice = knowledge.new_thing(Concept::Person("Alice".to_string()));
-//!     let apples = knowledge.new_thing(Concept::Food("Apples".to_string()));
-//!     let fruit = knowledge.new_thing(Concept::Category("Fruit".to_string()));
+//!     let alice = knowledge.new_thing(Concept::Person("Alice"));
+//!     let apples = knowledge.new_thing(Concept::Food("Apples"));
+//!     let fruit = knowledge.new_thing(Concept::Category("Fruit"));
 //!
 //!     // Build relationships between concepts
-//!     knowledge.new_directed_connection(alice.clone(), apples.clone(), Relationship::Likes);
-//!     knowledge.new_directed_connection(apples.clone(), fruit.clone(), Relationship::IsA);
+//!     knowledge.new_directed_connection(alice.clone(), Relationship::Likes, apples.clone());
+//!     knowledge.new_directed_connection(apples.clone(), Relationship::IsA, fruit.clone());
 //!
 //!     // Query the knowledge: What category of food does Alice like?
-//!     let alice_preferences = alice.access_connections(|conn| {
-//!         conn.access_data(|data| return if matches!(data,Relationship::Likes) {
-//!             Some(conn)
+//!     let alice_preferences = alice.do_for_all_connections(|conn| {
+//!         if conn.points_away_from(&alice) && conn == &Relationship::Likes {
+//!             Do::Take(conn)
 //!         } else {
-//!             None
-//!         })
+//!             Do::Nothing
+//!         }
 //!     });
 //!
 //!     for preference in alice_preferences {
 //!         if let Some(food) = preference.get_directed_towards() {
-//!             let food_categories = food.access_a_connection(|conn| {
-//!                 conn.access_data(|data| return if matches!(data,Relationship::IsA) {
-//!                     Some(conn.clone())
-//!                 } else { None })
-//!
+//!             let food_categories = food.do_for_a_connection(|conn| {
+//!                 if conn == &Relationship::IsA {
+//!                     Do::Take(conn.clone())
+//!                 } else {
+//!                     Do::Nothing
+//!                 }
 //!             });
 //!
 //!             for category_rel in food_categories {
 //!                 if let Some(category) = category_rel.get_directed_towards() {
 //!                     println!("Alice likes food in category: {:?}",
-//!                         category.access_data(|data| data));
+//!                         category.access(|data| data));
 //!                 }
 //!             }
 //!         }
@@ -76,6 +77,13 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 
 use core::cell::RefCell;
+
+/// A signal to return a value or continue iterating.
+/// Mainly to keep semantics clean.
+pub enum Do<R> {
+    Take(R),
+    Nothing,
+}
 
 /// A node in the graph that holds data and maintains connections to other things.
 ///
@@ -98,44 +106,44 @@ use core::cell::RefCell;
 /// let person = Thing::new("Alice");
 ///
 /// // Access the data safely
-/// let name = person.access_data(|data| data.clone());
+/// let name = person.access(|data| data.clone());
 /// assert_eq!(name, "Alice");
 /// ```
 ///
 /// ## Complete Navigation Example
 /// ```rust
-/// use connect_things::Things;
+/// use connect_things::*;
 ///
 /// let mut graph = Things::new();
 ///
 /// let person = graph.new_thing("Alice");
 /// let hobby = graph.new_thing("Photography");
 ///
-/// let enjoys = graph.new_directed_connection(person.clone(), hobby, "enjoys");
+/// let enjoys = graph.new_directed_connection(person.clone(), "enjoys", hobby);
 ///
 /// // Navigate from person to their hobby
-/// let alice_hobbies = person.access_connections(|conn| {
-///     conn.access_data(|data| return if *data == "enjoys" { Some(conn) } else { None })
+/// let alice_hobbies = person.do_for_all_connections(|conn| {
+///     conn.access(|data| return if *data == "enjoys" { Do::Take(conn) } else { Do::Nothing })
 /// });
 ///
 /// for hobby_connection in alice_hobbies {
 ///     if let Some(hobby_thing) = hobby_connection.get_directed_towards() {
-///         let hobby_name = hobby_thing.access_data(|data| *data);
+///         let hobby_name = hobby_thing.access(|data| *data);
 ///         println!("Alice enjoys: {}", hobby_name);
 ///     }
 /// }
 /// ```
-pub struct Thing<T, C> {
+pub struct Thing<T: PartialEq, C: PartialEq> {
     inner: Rc<RefCell<ThingInner<T, C>>>,
 }
 
-struct ThingInner<T, C> {
+struct ThingInner<T: PartialEq, C: PartialEq> {
     connections: Vec<Connection<T, C>>,
     data: T,
     is_alive: bool,
 }
 
-impl<T, C> ThingInner<T, C> {
+impl<T: PartialEq, C: PartialEq> ThingInner<T, C> {
     pub fn new(data: T) -> Self {
         ThingInner {
             connections: Vec::new(),
@@ -153,7 +161,7 @@ impl<T, C> ThingInner<T, C> {
     }
 }
 
-impl<T, C> Thing<T, C> {
+impl<T: PartialEq, C: PartialEq> Thing<T, C> {
     /// Creates a new thing with the provided data.
     ///
     /// The thing starts alive and with no connections. Connections must be
@@ -177,9 +185,20 @@ impl<T, C> Thing<T, C> {
     /// This is typically called internally by the `Things` container when
     /// creating connections. Manual use should be done carefully to maintain
     /// graph consistency.
-    pub unsafe fn add_connection(&self, connection: Connection<T, C>) {
+    pub unsafe fn connect(&self, connection: Connection<T, C>) {
         let mut inner = self.inner.borrow_mut();
         inner.connections.push(connection);
+    }
+
+    /// Checks if a connection is present for a thing.
+    pub fn is_connected_through(&self, other: &Connection<T, C>) -> bool {
+        let inner = self.inner.borrow();
+        for conn in &inner.connections {
+            if conn == other {
+                return true;
+            }
+        }
+        false
     }
 
     /// Finds the first connection that matches the given predicate.
@@ -191,27 +210,30 @@ impl<T, C> Thing<T, C> {
     /// # Examples
     ///
     /// ```rust
-    /// # use connect_things::{Connection, Thing};
+    /// # use connect_things::*;
     /// # let person = Thing::new("Person");
     /// # let other = Thing::new("Other");
     /// # let connection = Connection::new_undirected([person.clone(),other],"friendship");
     ///
     /// // Find a "friendship" connection and navigate to the friend
-    /// if let Some(friendship) = person.access_a_connection(|conn| {
-    ///     conn.access_data(|data| return if *data == "friendship" { Some(conn.clone()) } else { None })
+    /// if let Some(friendship) = person.do_for_a_connection(|conn| {
+    ///     conn.access(|data| return if *data == "friendship" { Do::Take(conn.clone()) } else { Do::Nothing })
     /// }) {
     ///     // For directed connections, get the target safely
     ///     if let Some(friend) = friendship.get_directed_towards() {
     ///         println!("Found a friend!");
     ///     }
     ///     // For undirected connections, get both connected things
-    ///     let connected_people = friendship.get_connected_things();
+    ///     let connected_people = friendship.get_things();
     /// }
     /// ```
-    pub fn access_a_connection<R: Clone>(&self, search_for: impl Fn(&Connection<T, C>) -> Option<R>) -> Option<R> {
+    pub fn do_for_a_connection<R: Clone>(
+        &self,
+        do_for: impl Fn(&Connection<T, C>) -> Do<R>,
+    ) -> Option<R> {
         let inner = self.inner.try_borrow().unwrap();
         for conn in inner.connections.iter() {
-            if let Some(value) = search_for(conn) {
+            if let Do::Take(value) = do_for(conn) {
                 return Some(value.clone());
             }
         }
@@ -225,11 +247,11 @@ impl<T, C> Thing<T, C> {
     ///
     /// # Returns
     /// A vector containing all matching connections. Empty if no matches found.
-    pub fn access_connections<R>(&self, find: impl Fn(&Connection<T, C>) -> Option<R>) -> Vec<R> {
+    pub fn do_for_all_connections<R>(&self, do_for: impl Fn(&Connection<T, C>) -> Do<R>) -> Vec<R> {
         let mut connections = Vec::new();
         let inner = self.inner.borrow();
         for conn in inner.connections.iter() {
-            if let Some(value) = find(conn) {
+            if let Do::Take(value) = do_for(conn) {
                 connections.push(value)
             }
         }
@@ -257,10 +279,10 @@ impl<T, C> Thing<T, C> {
     /// # use connect_things::Thing;
     /// # let person = Thing::new("Alice");
     ///
-    /// let name_length = person.access_data(|data| data.len());
-    /// let is_alice = person.access_data(|data| *data == "Alice");
+    /// let name_length = person.access(|data| data.len());
+    /// let is_alice = person.access(|data| *data == "Alice");
     /// ```
-    pub fn access_data<R>(&self, access: impl Fn(&T) -> R) -> R {
+    pub fn access<R>(&self, access: impl Fn(&T) -> R) -> R {
         let inner = self.inner.try_borrow().unwrap();
         access(inner.get_data())
     }
@@ -276,11 +298,11 @@ impl<T, C> Thing<T, C> {
     /// # let person = Thing::new("Alice");
     ///
     /// // Update a person's name
-    /// person.access_data_mut(|name| {
+    /// person.access_mut(|name| {
     ///     *name = "Bob";
     /// });
     /// ```
-    pub fn access_data_mut<R>(&self, access: impl Fn(&mut T) -> R) -> R {
+    pub fn access_mut<R>(&self, access: impl Fn(&mut T) -> R) -> R {
         let mut inner = self.inner.borrow_mut();
         access(inner.get_data_mut())
     }
@@ -300,21 +322,27 @@ impl<T, C> Thing<T, C> {
     /// # Returns
     /// The number of items killed (this thing plus any live connections that were killed).
     fn kill(&self) -> usize {
-        let mut amnt = 0;
+        let mut amount = 0;
         let mut inner = self.inner.borrow_mut();
         // Only kill connections that are still alive to avoid double-counting
         for connection in inner.connections.iter() {
             if connection.is_alive() {
                 connection.kill();
-                amnt += 1;
+                amount += 1;
             }
         }
         inner.is_alive = false;
-        amnt + 1 // +1 for this thing itself
+        amount + 1 // +1 for this thing itself
+    }
+
+    /// Removes dead connections.
+    fn clean(&mut self) {
+        let mut inner = self.inner.borrow_mut();
+        inner.connections.retain(|c| c.is_alive());
     }
 }
 
-impl<T, C> Clone for Thing<T, C> {
+impl<T: PartialEq, C: PartialEq> Clone for Thing<T, C> {
     /// Creates a new reference to the same thing.
     ///
     /// This is a shallow clone - both instances refer to the same underlying
@@ -327,9 +355,19 @@ impl<T, C> Clone for Thing<T, C> {
     }
 }
 
-impl<T,C> PartialEq for Thing<T,C> {
+impl<T: PartialEq, C: PartialEq> PartialEq for Thing<T, C> {
     fn eq(&self, other: &Self) -> bool {
-        self.access_data(|data| *data) == other.access_data(|data| *data)
+        self.access(|data| other.access(|other_data| data == other_data))
+    }
+}
+
+impl<T: PartialEq, C: PartialEq> PartialEq<T> for Thing<T, C> {
+    fn eq(&self, other: &T) -> bool {
+        self.access(|data| data == other)
+    }
+
+    fn ne(&self, other: &T) -> bool {
+        self.access(|data| data != other)
     }
 }
 
@@ -354,7 +392,7 @@ impl<T,C> PartialEq for Thing<T,C> {
 /// let bob = Thing::new("Bob");
 ///
 /// // Create a directed connection (Alice likes Bob)
-/// let likes = Connection::new_directed(alice, bob, "likes");
+/// let likes = Connection::new_directed(alice, "likes", bob);
 /// ```
 ///
 /// ## Modeling Different Relationship Types
@@ -375,13 +413,13 @@ impl<T,C> PartialEq for Thing<T,C> {
 /// // Asymmetric relationship: following can be one-way
 /// let following = social_graph.new_directed_connection(
 ///     alice.clone(),
-///     bob.clone(),
-///     "follows"
+///     "follows",
+///     bob.clone()
 /// );
 ///
 /// // Friendship works both ways
 /// assert!(friendship.is_undirected());
-/// let friends = friendship.get_connected_things();
+/// let friends = friendship.get_things();
 /// // Either person can find this friendship in their connections
 ///
 /// // Following has direction
@@ -393,11 +431,11 @@ impl<T,C> PartialEq for Thing<T,C> {
 ///     // Bob is being followed
 /// }
 /// ```
-pub struct Connection<T, C> {
+pub struct Connection<T: PartialEq, C: PartialEq> {
     inner: Rc<RefCell<ConnectionInner<T, C>>>,
 }
 
-enum ConnectionInner<T, C> {
+enum ConnectionInner<T: PartialEq, C: PartialEq> {
     Directed {
         from: Thing<T, C>,
         to: Thing<T, C>,
@@ -411,8 +449,8 @@ enum ConnectionInner<T, C> {
     },
 }
 
-impl<T, C> ConnectionInner<T, C> {
-    fn new_directed(from: Thing<T, C>, to: Thing<T, C>, data: C) -> Self {
+impl<T: PartialEq, C: PartialEq> ConnectionInner<T, C> {
+    fn new_directed(from: Thing<T, C>, data: C, to: Thing<T, C>) -> Self {
         Self::Directed {
             from,
             to,
@@ -454,6 +492,79 @@ impl<T, C> ConnectionInner<T, C> {
         }
     }
 
+    fn contains(&self, thing: &Thing<T, C>) -> bool {
+        match &self {
+            &ConnectionInner::Directed { from, to, .. } => {
+                if (from == thing) || (to == thing) {
+                    true
+                } else {
+                    false
+                }
+            }
+            &ConnectionInner::Undirected { things, .. } => {
+                if (&things[0] == thing) || (&things[1] == thing) {
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn get_direction_relative_to(&self, thing: &Thing<T, C>) -> Result<Direction, ()> {
+        match &self {
+            &ConnectionInner::Directed { from, to, .. } => {
+                if thing == from {
+                    Ok(Direction::AwayFrom)
+                } else if thing == to {
+                    Ok(Direction::Towards)
+                } else {
+                    Err(())
+                }
+            }
+            _ => Err(()),
+        }
+    }
+
+    fn points_away_from(&self, thing: &Thing<T, C>) -> bool {
+        if let Ok(Direction::AwayFrom) = self.get_direction_relative_to(thing) {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn points_towards(&self, thing: &Thing<T, C>) -> bool {
+        if let Ok(Direction::Towards) = self.get_direction_relative_to(thing) {
+            true
+        } else {
+            false
+        }
+    }
+
+    fn get_other_thing(&self, thing: &Thing<T, C>) -> Result<Thing<T, C>, ()> {
+        match &self {
+            &ConnectionInner::Directed { from, to, .. } => {
+                if thing == from {
+                    Ok(to.clone())
+                } else if thing == to {
+                    Ok(from.clone())
+                } else {
+                    Err(())
+                }
+            }
+            &ConnectionInner::Undirected { things, .. } => {
+                if thing == &things[0] {
+                    Ok(things[1].clone())
+                } else if thing == &things[1] {
+                    Ok(things[0].clone())
+                } else {
+                    Err(())
+                }
+            }
+        }
+    }
+
     fn is_alive(&self) -> bool {
         match self {
             &ConnectionInner::Directed { is_alive, .. } => is_alive,
@@ -477,7 +588,14 @@ impl<T, C> ConnectionInner<T, C> {
     }
 }
 
-impl<T, C> Connection<T, C> {
+/// Used to check whether a connection is directed towards or away from a thing.
+#[derive(PartialEq, Debug)]
+pub enum Direction {
+    Towards,
+    AwayFrom,
+}
+
+impl<T: PartialEq, C: PartialEq> Connection<T, C> {
     /// Creates a new directed connection from one thing to another.
     ///
     /// Directed connections represent asymmetric relationships. The order matters:
@@ -497,12 +615,12 @@ impl<T, C> Connection<T, C> {
     /// # let task_a = Thing::new(());
     /// # let task_b = Thing::new(());
     ///
-    /// let parent_child = Connection::new_directed(parent, child, "parent_of");
-    /// let dependency = Connection::new_directed(task_a, task_b, "depends_on");
+    /// let parent_child = Connection::new_directed(parent, "parent_of", child);
+    /// let dependency = Connection::new_directed(task_a, "depends_on", task_b);
     /// ```
-    pub fn new_directed(from: Thing<T, C>, to: Thing<T, C>, data: C) -> Connection<T, C> {
+    pub fn new_directed(from: Thing<T, C>, data: C, to: Thing<T, C>) -> Connection<T, C> {
         Connection {
-            inner: Rc::new(RefCell::new(ConnectionInner::new_directed(from, to, data))),
+            inner: Rc::new(RefCell::new(ConnectionInner::new_directed(from, data, to))),
         }
     }
 
@@ -560,9 +678,9 @@ impl<T, C> Connection<T, C> {
     /// # use connect_things::*;
     /// # let connection = Connection::new_undirected([Thing::new(()),Thing::new(())],"friendship");
     ///
-    /// let relationship_type = connection.access_data(|data| data.clone());
-    /// let is_friendship = connection.access_data(|data| *data == "friendship");
-    pub fn access_data<R>(&self, access: impl Fn(&C) -> R) -> R {
+    /// let relationship_type = connection.access(|data| data.clone());
+    /// let is_friendship = connection.access(|data| *data == "friendship");
+    pub fn access<R>(&self, access: impl Fn(&C) -> R) -> R {
         let inner = self.inner.borrow();
         access(inner.get_data())
     }
@@ -570,7 +688,7 @@ impl<T, C> Connection<T, C> {
     /// Provides mutable access to this connection's data.
     ///
     /// Allows modification of the relationship data while maintaining safety.
-    pub fn access_data_mut<R>(&self, access: impl Fn(&mut C) -> R) -> R {
+    pub fn access_mut<R>(&self, access: impl Fn(&mut C) -> R) -> R {
         let mut inner = self.inner.borrow_mut();
         access(inner.get_data_mut())
     }
@@ -582,7 +700,7 @@ impl<T, C> Connection<T, C> {
     ///
     /// # Returns
     /// An array containing exactly two things.
-    pub fn get_connected_things(&self) -> [Thing<T, C>; 2] {
+    pub fn get_things(&self) -> [Thing<T, C>; 2] {
         let inner = self.inner.borrow();
         inner.get_things().clone()
     }
@@ -601,7 +719,7 @@ impl<T, C> Connection<T, C> {
     ///
     /// ```rust
     /// # use connect_things::*;
-    /// # let parent_child_relationship = Connection::new_directed(Thing::new(()),Thing::new(()),());
+    /// # let parent_child_relationship = Connection::new_directed(Thing::new(()),(),Thing::new(()));
     ///
     /// if let Some(parent) = parent_child_relationship.get_directed_from() {
     ///     println!("Found the parent");
@@ -630,7 +748,7 @@ impl<T, C> Connection<T, C> {
     ///
     /// ```rust
     /// # use connect_things::*;
-    /// # let parent_child_relationship = Connection::new_directed(Thing::new(()),Thing::new(()),());
+    /// # let parent_child_relationship = Connection::new_directed(Thing::new(()),(),Thing::new(()));
     ///
     /// if let Some(child) = parent_child_relationship.get_directed_towards() {
     ///     println!("Found the child");
@@ -643,6 +761,90 @@ impl<T, C> Connection<T, C> {
         } else {
             None
         }
+    }
+
+    /// Tells you whether a thing is part of a connection.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    ///  use connect_things::*;
+    ///
+    /// let a = Thing::new("a");
+    /// let b = Thing::new("b");
+    /// let ab = Connection::new_undirected([a.clone(),b.clone()],"ab");
+    ///
+    /// assert!(ab.contains(&a));
+    /// assert!(ab.contains(&b));
+    ///
+    /// ```
+    pub fn contains(&self, thing: &Thing<T, C>) -> bool {
+        let inner = self.inner.borrow();
+        inner.contains(thing)
+    }
+
+    /// Reveals whether a thing is the target or source of the directed connection.
+    ///
+    /// # Returns
+    /// - `Ok(Direction)`: The direction if the connection is directed and the thing is part of the connection.
+    /// - `Err(())`: If the above conditions were not satisfied.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use connect_things::*;
+    /// # let apples = Thing::new("Apples");
+    /// # let oranges = Thing::new("Oranges");
+    ///
+    /// let comparison = Connection::new_directed(apples.clone(),"compare_to",oranges.clone());
+    ///
+    /// assert_eq!(Direction::AwayFrom, comparison.get_direction_relative_to(&apples).unwrap());
+    /// ```
+    pub fn get_direction_relative_to(&self, thing: &Thing<T, C>) -> Result<Direction, ()> {
+        let inner = self.inner.borrow();
+        inner.get_direction_relative_to(thing)
+    }
+
+    /// Quickly check if a connection points away from a thing.
+    ///
+    /// # Returns
+    /// - `true`: If `connection.get_direction_relative_to(&thing)` returns `Ok(Direction::AwayFrom)`.
+    /// - `false`: Otherwise
+    pub fn points_away_from(&self, thing: &Thing<T,C>) -> bool {
+        let inner = self.inner.borrow();
+        inner.points_away_from(thing)
+    }
+
+    /// Quickly check if a connection points towards a thing.
+    ///
+    /// # Returns
+    /// - `true`: If `connection.get_direction_relative_to(&thing)` returns `Ok(Direction::Towards)`.
+    /// - `false`: Otherwise
+    pub fn points_towards(&self, thing: &Thing<T,C>) -> bool {
+        let inner = self.inner.borrow();
+        inner.points_towards(thing)
+    }
+
+    /// Finds the thing at the other end of a connection.
+    ///
+    /// # Returns
+    /// - `Ok(Thing<T,C>)`: The other thing if the argument is part of the connection.
+    /// - `Err(())`: Otherwise.
+    ///
+    /// # Example
+    /// ```rust
+    /// # use connect_things::*;
+    ///
+    /// let thing1 = Thing::new(());
+    /// let thing2 = Thing::new(());
+    ///
+    /// let connection = Connection::new_undirected([thing1.clone(),thing2.clone()],());
+    ///
+    /// assert!(thing2 == connection.get_other_thing(&thing1).unwrap());
+    /// ```
+    pub fn get_other_thing(&self, thing: &Thing<T, C>) -> Result<Thing<T, C>, ()> {
+        let inner = self.inner.borrow();
+        inner.get_other_thing(thing)
     }
 
     /// Returns whether this connection is still alive (not marked for deletion).
@@ -662,7 +864,7 @@ impl<T, C> Connection<T, C> {
     }
 }
 
-impl<T, C> Clone for Connection<T, C> {
+impl<T: PartialEq, C: PartialEq> Clone for Connection<T, C> {
     /// Creates a new reference to the same connection.
     ///
     /// This is a shallow clone - both instances refer to the same underlying
@@ -674,9 +876,19 @@ impl<T, C> Clone for Connection<T, C> {
     }
 }
 
-impl<T,C> PartialEq for Connection<T,C> {
+impl<T: PartialEq, C: PartialEq> PartialEq for Connection<T, C> {
     fn eq(&self, other: &Self) -> bool {
-        self.access_data(|data| *data) == other.access_data(|data| *data)
+        self.access(|data| other.access(|other_data| data == other_data))
+    }
+}
+
+impl<T: PartialEq, C: PartialEq> PartialEq<C> for Connection<T, C> {
+    fn eq(&self, other: &C) -> bool {
+        self.access(|data| data == other)
+    }
+
+    fn ne(&self, other: &C) -> bool {
+        self.access(|data| data != other)
     }
 }
 
@@ -720,7 +932,7 @@ impl<T,C> PartialEq for Connection<T,C> {
 /// // Build a temporary subgraph for analysis
 /// let temp_data = graph.new_thing("temporary_analysis");
 /// let result = graph.new_thing("analysis_result");
-/// graph.new_directed_connection(temp_data.clone(), result.clone(), "produces");
+/// graph.new_directed_connection(temp_data.clone(), "produces", result.clone());
 ///
 /// // Check memory pressure before cleanup
 /// match graph.dead_percentage() {
@@ -734,19 +946,19 @@ impl<T,C> PartialEq for Connection<T,C> {
 ///
 /// // Remove temporary analysis data when done
 /// graph.kill_things(|thing| {
-///     thing.access_data(|data| data.starts_with("temporary_"))
+///     thing.access(|data| data.starts_with("temporary_"))
 /// });
 ///
 /// // Keep final results, clean up intermediate data
 /// graph.clean();
 /// ```
-pub struct Things<T, C> {
+pub struct Things<T: PartialEq, C: PartialEq> {
     things: Vec<Thing<T, C>>,
     connections: Vec<Connection<T, C>>,
-    dead_amnt: usize,
+    dead_amount: usize,
 }
 
-impl<T, C> Things<T, C> {
+impl<T: PartialEq, C: PartialEq> Things<T, C> {
     /// Creates a new, empty graph container.
     ///
     /// The container starts with no things, no connections, and zero dead items.
@@ -754,7 +966,7 @@ impl<T, C> Things<T, C> {
         Things {
             things: Vec::new(),
             connections: Vec::new(),
-            dead_amnt: 0,
+            dead_amount: 0,
         }
     }
 
@@ -808,18 +1020,18 @@ impl<T, C> Things<T, C> {
     /// # let employee = Thing::new(());
     /// # let mut graph = Things::new();
     ///
-    /// let follows = graph.new_directed_connection(alice, bob, "follows");
-    /// let manages = graph.new_directed_connection(manager, employee, "manages");
+    /// let follows = graph.new_directed_connection(alice, "follows", bob);
+    /// let manages = graph.new_directed_connection(manager, "manages", employee);
     /// ```
     pub fn new_directed_connection(
         &mut self,
         from: Thing<T, C>,
-        to: Thing<T, C>,
         data: C,
+        to: Thing<T, C>,
     ) -> Connection<T, C> {
-        let connection = Connection::<T, C>::new_directed(from.clone(), to.clone(), data);
-        unsafe { from.add_connection(connection.clone()) };
-        unsafe { to.add_connection(connection.clone()) };
+        let connection = Connection::<T, C>::new_directed(from.clone(), data, to.clone());
+        unsafe { from.connect(connection.clone()) };
+        unsafe { to.connect(connection.clone()) };
         self.connections.push(connection.clone());
         connection
     }
@@ -851,8 +1063,8 @@ impl<T, C> Things<T, C> {
         data: C,
     ) -> Connection<T, C> {
         let connection = Connection::<T, C>::new_undirected(things.clone(), data);
-        unsafe { things[0].add_connection(connection.clone()) };
-        unsafe { things[1].add_connection(connection.clone()) };
+        unsafe { things[0].connect(connection.clone()) };
+        unsafe { things[1].connect(connection.clone()) };
         self.connections.push(connection.clone());
         connection
     }
@@ -871,13 +1083,13 @@ impl<T, C> Things<T, C> {
     /// # use connect_things::*;
     /// # let mut graph = Things::new();
     ///
-    /// let alice = graph.access_a_thing(|thing| {
-    ///     thing.access_data(|data| return if data.name == "Alice" { Some(thing) } else { None })
+    /// let alice = graph.do_for_a_thing(|thing| {
+    ///     thing.access(|data| return if data.name == "Alice" { Do::Take(thing) } else { Do::Nothing })
     /// });
     /// ```
-    pub fn access_a_thing<R>(&self, get: impl Fn(&Thing<T, C>) -> Option<R>) -> Option<R> {
+    pub fn do_for_a_thing<R>(&self, do_for: impl Fn(&Thing<T, C>) -> Do<R>) -> Option<R> {
         for thing in &self.things {
-            if let Some(value) = get(thing) {
+            if let Do::Take(value) = do_for(thing) {
                 return Some(value);
             }
         }
@@ -891,10 +1103,10 @@ impl<T, C> Things<T, C> {
     ///
     /// # Returns
     /// A vector containing all matching things. Empty if no matches found.
-    pub fn access_things<R>(&self, get: impl Fn(&Thing<T, C>) -> Option<R>) -> Vec<R> {
+    pub fn do_for_all_things<R>(&self, get: impl Fn(&Thing<T, C>) -> Do<R>) -> Vec<R> {
         let mut things = Vec::new();
         for thing in &self.things {
-            if let Some(value) = get(thing) {
+            if let Do::Take(value) = get(thing) {
                 things.push(value);
             }
         }
@@ -917,14 +1129,17 @@ impl<T, C> Things<T, C> {
     ///
     /// // Remove all temporary items
     /// graph.kill_things(|thing| {
-    ///     thing.access_data(|data| data.is_temporary)
+    ///     thing.access(|data| data.is_temporary)
     /// });
     /// ```
     pub fn kill_things(&mut self, kill: impl Fn(&Thing<T, C>) -> bool) {
         self.things.iter().for_each(|thing| {
             if kill(thing) {
-                let amnt = thing.kill();
-                let _ = self.dead_amnt.saturating_add(amnt);
+                let amount = thing.kill();
+                self.dead_amount = self
+                    .dead_amount
+                    .checked_add(amount)
+                    .unwrap_or_else(|| usize::MAX);
             }
         });
     }
@@ -939,16 +1154,16 @@ impl<T, C> Things<T, C> {
     /// # use connect_things::*;
     /// # let mut graph = Things::new();
     ///
-    /// let friendship = graph.get_a_connection(|conn| {
-    ///     conn.access_data(|data| return if *data == "friendship" { Some(conn) } else { None })
+    /// let friendship = graph.do_for_a_connection(|conn| {
+    ///     conn.access(|data| return if *data == "friendship" { Do::Take(conn) } else { Do::Nothing })
     /// });
     /// ```
-    pub fn get_a_connection<'l,R>(
+    pub fn do_for_a_connection<'l, R>(
         &self,
-        get: impl Fn(&Connection<T, C>) -> Option<R>,
+        get: impl Fn(&Connection<T, C>) -> Do<R>,
     ) -> Option<R> {
         for connection in &self.connections {
-            if let Some(value) = get(connection) {
+            if let Do::Take(value) = get(connection) {
                 return Some(value);
             }
         }
@@ -959,10 +1174,10 @@ impl<T, C> Things<T, C> {
     ///
     /// Useful for analyzing relationship patterns or finding all connections
     /// of a particular type.
-    pub fn get_connections<R>(&self, found: impl Fn(&Connection<T, C>) -> Option<R>) -> Vec<R> {
+    pub fn do_for_all_connections<R>(&self, found: impl Fn(&Connection<T, C>) -> Do<R>) -> Vec<R> {
         let mut connections = Vec::new();
         for connection in &self.connections {
-            if let Some(value) = found(connection) {
+            if let Do::Take(value) = found(connection) {
                 connections.push(value);
             }
         }
@@ -982,14 +1197,14 @@ impl<T, C> Things<T, C> {
     ///
     /// // Remove all temporary relationships
     /// graph.kill_connections(|conn| {
-    ///     conn.access_data(|data| data.is_temporary)
+    ///     conn.access(|data| data.is_temporary)
     /// });
     /// ```
     pub fn kill_connections(&mut self, kill: impl Fn(&Connection<T, C>) -> bool) {
         self.connections.iter().for_each(|connection| {
             if kill(connection) {
                 connection.kill();
-                let _ = self.dead_amnt.saturating_add(1);
+                let _ = self.dead_amount.saturating_add(1);
             }
         });
     }
@@ -1030,18 +1245,21 @@ impl<T, C> Things<T, C> {
             .things
             .len()
             .checked_add(self.connections.len())
-            .unwrap_or_else(|| 100);
+            .unwrap_or_else(|| usize::MAX);
 
         if total == 0 {
-            self.dead_amnt = 0;
+            self.dead_amount = 0;
             return Err(());
         }
 
-        let mulled = self.dead_amnt.checked_mul(100).unwrap_or_else(|| 100);
+        let multiplied = self
+            .dead_amount
+            .checked_mul(100)
+            .unwrap_or_else(|| usize::MAX);
 
-        let dived = mulled / total;
+        let divided = multiplied / total;
 
-        Ok(dived)
+        Ok(divided)
     }
 
     /// Removes all dead things and connections from memory.
@@ -1067,11 +1285,18 @@ impl<T, C> Things<T, C> {
     /// }
     /// ```
     pub fn clean(&mut self) {
-        self.things.retain(|thing| thing.is_alive());
+        self.things.retain_mut(|thing| {
+            return if thing.is_alive() {
+                thing.clean();
+                true
+            } else {
+                false
+            };
+        });
 
         self.connections.retain(|connection| connection.is_alive());
 
-        self.dead_amnt = 0;
+        self.dead_amount = 0;
     }
 }
 
@@ -1088,19 +1313,19 @@ mod tests {
 
         let apple = graph.new_thing("Apple");
         let apples = graph.new_thing("Apples");
-        graph.new_directed_connection(apples.clone(), apple.clone(), "plural of");
+        graph.new_directed_connection(apples.clone(), "plural of", apple.clone());
 
         let pear = graph.new_thing("Pear");
         let pears = graph.new_thing("Pears");
-        graph.new_directed_connection(pears.clone(), pear.clone(), "plural of");
+        graph.new_directed_connection(pears.clone(), "plural of", pear.clone());
 
         let alice = graph.new_thing("Alice");
-        graph.new_directed_connection(alice.clone(), apples, "likes to eat");
-        graph.new_directed_connection(alice, pears, "doesn't like to eat");
+        graph.new_directed_connection(alice.clone(), "likes to eat", apples);
+        graph.new_directed_connection(alice, "doesn't like to eat", pears);
 
         let fruit = graph.new_thing("Fruit");
-        graph.new_directed_connection(apple, fruit.clone(), "is");
-        graph.new_directed_connection(pear, fruit, "is");
+        graph.new_directed_connection(apple, "is", fruit.clone());
+        graph.new_directed_connection(pear, "is", fruit);
 
         graph
     }
@@ -1111,11 +1336,23 @@ mod tests {
 
         // Query: What does Alice like to eat?
         let alice = graph
-            .access_a_thing(|thing| return if thing.access_data(|data| *data == "Alice") { Some(thing.clone()) } else { None })
+            .do_for_a_thing(|thing| {
+                return if thing.access(|data| *data == "Alice") {
+                    Do::Take(thing.clone())
+                } else {
+                    Do::Nothing
+                };
+            })
             .unwrap();
 
         let liked_food_connection = alice
-            .access_a_connection(|connection| return if connection.access_data(|data| *data == "likes to eat") { Some(connection.clone()) } else { None })
+            .do_for_a_connection(|connection| {
+                return if connection.access(|data| *data == "likes to eat") {
+                    Do::Take(connection.clone())
+                } else {
+                    Do::Nothing
+                };
+            })
             .unwrap();
 
         // Use the new API that returns Option
@@ -1123,7 +1360,7 @@ mod tests {
 
         let answer = format!(
             "The thing alice likes to eat is: {}.",
-            liked_food.access_data(|data| data.to_ascii_lowercase())
+            liked_food.access(|data| data.to_ascii_lowercase())
         );
 
         assert_eq!("The thing alice likes to eat is: apples.", &answer);
@@ -1135,23 +1372,28 @@ mod tests {
 
         // Query: What are some examples of fruit?
         let fruit_concept = graph
-            .access_a_thing(|thing| return if thing.access_data(|data| *data == "Fruit") { Some(thing.clone()) } else { None })
+            .do_for_a_thing(|thing| {
+                return if thing.access(|data| *data == "Fruit") {
+                    Do::Take(thing.clone())
+                } else {
+                    Do::Nothing
+                };
+            })
             .unwrap();
 
         // Find all things that are instances of fruit
-        let fruit_examples: Vec<_> = graph
-            .get_connections(|conn| {
-                // Find "is" relationships pointing to the fruit concept
-                return if conn.access_data(|data| *data == "is") {
-                    if conn.get_directed_towards().unwrap() == fruit_concept {
-                        Some(conn.get_directed_from().unwrap().access_data(|data| *data))
-                    } else {
-                        None
-                    }
+        let fruit_examples: Vec<_> = graph.do_for_all_connections(|conn| {
+            // Find "is" relationships pointing to the fruit concept
+            return if conn.access(|data| *data == "is") {
+                if let Ok(Direction::Towards) = conn.get_direction_relative_to(&fruit_concept) {
+                    Do::Take(conn.get_directed_from().unwrap().access(|data| *data))
                 } else {
-                    None
+                    Do::Nothing
                 }
-            });
+            } else {
+                Do::Nothing
+            };
+        });
 
         assert!(fruit_examples.contains(&"Apple"));
         assert!(fruit_examples.contains(&"Pear"));
@@ -1169,40 +1411,46 @@ mod tests {
         let diana = social_graph.new_thing("Diana".to_string());
 
         // Create friendships (undirected relationships)
-        social_graph.new_undirected_connection([alice.clone(), bob.clone()], "friendship".to_string());
-        social_graph.new_undirected_connection([bob.clone(), charlie.clone()], "friendship".to_string());
-        social_graph.new_undirected_connection([alice.clone(), diana.clone()], "friendship".to_string());
+        social_graph
+            .new_undirected_connection([alice.clone(), bob.clone()], "friendship".to_string());
+        social_graph
+            .new_undirected_connection([bob.clone(), charlie.clone()], "friendship".to_string());
+        social_graph
+            .new_undirected_connection([alice.clone(), diana.clone()], "friendship".to_string());
 
         // Create follows relationships (directed)
-        social_graph.new_directed_connection(charlie.clone(), alice.clone(), "follows".to_string());
-        social_graph.new_directed_connection(diana.clone(), bob.clone(), "follows".to_string());
+        social_graph.new_directed_connection(charlie.clone(), "follows".to_string(), alice.clone());
+        social_graph.new_directed_connection(diana.clone(), "follows".to_string(), bob.clone());
 
         // Test: Find Alice's friends
-        let alice_friendships = alice.access_connections(|conn| {
-            return if conn.is_undirected() && conn.access_data(|data| data == "friendship") {
-                Some(conn.clone())
+        let alice_friendships = alice.do_for_all_connections(|conn| {
+            return if conn.is_undirected() && conn.access(|data| data == "friendship") {
+                Do::Take(conn.clone())
             } else {
-                None
-            }
+                Do::Nothing
+            };
         });
 
         assert_eq!(alice_friendships.len(), 2); // Alice is friends with Bob and Diana
 
         // Test: Find who follows Alice
-        let alice_followers: Vec<_> = social_graph
-            .get_connections(|conn| {
-                return if conn.is_directed() &&
-                    conn.access_data(|data| data == "follows")  {
-                    conn.get_directed_towards().unwrap().access_data(|data| return if data == "Alice" {
-                        Some(conn.get_directed_from().unwrap().access_data(|data| data.clone()))
+        let alice_followers: Vec<_> = social_graph.do_for_all_connections(|conn| {
+            return if conn.is_directed() && conn.access(|data| data == "follows") {
+                conn.get_directed_towards().unwrap().access(|data| {
+                    return if data == "Alice" {
+                        Do::Take(
+                            conn.get_directed_from()
+                                .unwrap()
+                                .access(|data| data.clone()),
+                        )
                     } else {
-                        None
-                    })
-                } else {
-                    None
-                }
-
-            });
+                        Do::Nothing
+                    };
+                })
+            } else {
+                Do::Nothing
+            };
+        });
 
         assert!(alice_followers.contains(&"Charlie".to_string()));
         assert_eq!(alice_followers.len(), 1);
@@ -1248,65 +1496,83 @@ mod tests {
         });
 
         // Create containment hierarchy
-        gui.new_directed_connection(window.clone(), dialog.clone(), Relationship::Contains);
-        gui.new_directed_connection(dialog.clone(), ok_button.clone(), Relationship::Contains);
-        gui.new_directed_connection(dialog.clone(), cancel_button.clone(), Relationship::Contains);
+        gui.new_directed_connection(window.clone(), Relationship::Contains, dialog.clone());
+        gui.new_directed_connection(dialog.clone(), Relationship::Contains, ok_button.clone());
+        gui.new_directed_connection(
+            dialog.clone(),
+            Relationship::Contains,
+            cancel_button.clone(),
+        );
 
         // Create focus chain
-        gui.new_directed_connection(ok_button.clone(), cancel_button.clone(), Relationship::FocusNext);
-        gui.new_directed_connection(cancel_button.clone(), ok_button.clone(), Relationship::FocusNext);
+        gui.new_directed_connection(
+            ok_button.clone(),
+            Relationship::FocusNext,
+            cancel_button.clone(),
+        );
+        gui.new_directed_connection(
+            cancel_button.clone(),
+            Relationship::FocusNext,
+            ok_button.clone(),
+        );
 
         // Create event bubbling relationships
-        gui.new_directed_connection(ok_button.clone(), dialog.clone(), Relationship::EventBubbles);
-        gui.new_directed_connection(cancel_button.clone(), dialog.clone(), Relationship::EventBubbles);
+        gui.new_directed_connection(
+            ok_button.clone(),
+            Relationship::EventBubbles,
+            dialog.clone(),
+        );
+        gui.new_directed_connection(
+            cancel_button.clone(),
+            Relationship::EventBubbles,
+            dialog.clone(),
+        );
 
         // Test: Find all widgets contained in the dialog
-        let dialog_children: Vec<_> = dialog
-            .access_connections(|conn| {
-                conn.access_data(|data| {
-                    if matches!(data,Relationship::Contains) {
-                        if let Some(from) = conn.get_directed_from() {
-                            if from.access_data(|data| data.clone()) == dialog.access_data(|data| data.clone()) {
-                                Some(conn.get_directed_towards().unwrap().access_data(|data| data.name.clone()))
-                            } else {
-                                return None;
-                            }
+        let dialog_children: Vec<_> = dialog.do_for_all_connections(|conn| {
+            conn.access(|data| {
+                if matches!(data, Relationship::Contains) {
+                    if let Some(from) = conn.get_directed_from() {
+                        if from == dialog {
+                            Do::Take(
+                                conn.get_directed_towards()
+                                    .unwrap()
+                                    .access(|data| data.name.clone()),
+                            )
                         } else {
-                            return None;
+                            Do::Nothing
                         }
                     } else {
-                        return None;
+                        Do::Nothing
                     }
-                })
-            });
+                } else {
+                    Do::Nothing
+                }
+            })
+        });
 
         assert!(dialog_children.contains(&"OkButton".to_string()));
         assert!(dialog_children.contains(&"CancelButton".to_string()));
         assert_eq!(dialog_children.len(), 2);
 
         // Test: Find the next widget in focus chain from OK button
-        let next_focus = ok_button
-            .access_a_connection(|conn| {
-                conn.access_data(|data| {
-                    return if matches!(data,Relationship::FocusNext) {
-                        if let Some(from) = conn.get_directed_from() {
-                            if from == ok_button {
-                                if let Some(to) = conn.get_directed_towards() {
-                                    Some(to.access_data(|data| data.name.clone()))
-                                } else {
-                                    None
-                                }
-                            } else {
-                                None
-                            }
+        let next_focus = ok_button.do_for_a_connection(|conn| {
+            conn.access(|data| {
+                return if matches!(data, Relationship::FocusNext) {
+                    if let Ok(Direction::AwayFrom) = conn.get_direction_relative_to(&ok_button) {
+                        if let Some(to) = conn.get_directed_towards() {
+                            Do::Take(to.access(|data| data.name.clone()))
                         } else {
-                            None
+                            Do::Nothing
                         }
                     } else {
-                        None
+                        Do::Nothing
                     }
-                })
-            });
+                } else {
+                    Do::Nothing
+                };
+            })
+        });
 
         assert_eq!(next_focus, Some("CancelButton".to_string()));
     }
@@ -1323,8 +1589,8 @@ mod tests {
         #[derive(Debug, Clone, PartialEq)]
         enum TaskRelation {
             DependsOn,
-            Blocks,
-            PartOf,
+            // Blocks,
+            // PartOf,
         }
 
         let mut project = Things::<Task, TaskRelation>::new();
@@ -1361,50 +1627,73 @@ mod tests {
         });
 
         // Create dependencies
-        project.new_directed_connection(implement_auth.clone(), design.clone(), TaskRelation::DependsOn);
-        project.new_directed_connection(implement_ui.clone(), design.clone(), TaskRelation::DependsOn);
-        project.new_directed_connection(testing.clone(), implement_auth.clone(), TaskRelation::DependsOn);
-        project.new_directed_connection(testing.clone(), implement_ui.clone(), TaskRelation::DependsOn);
-        project.new_directed_connection(deployment.clone(), testing.clone(), TaskRelation::DependsOn);
+        project.new_directed_connection(
+            implement_auth.clone(),
+            TaskRelation::DependsOn,
+            design.clone(),
+        );
+        project.new_directed_connection(
+            implement_ui.clone(),
+            TaskRelation::DependsOn,
+            design.clone(),
+        );
+        project.new_directed_connection(
+            testing.clone(),
+            TaskRelation::DependsOn,
+            implement_auth.clone(),
+        );
+        project.new_directed_connection(
+            testing.clone(),
+            TaskRelation::DependsOn,
+            implement_ui.clone(),
+        );
+        project.new_directed_connection(
+            deployment.clone(),
+            TaskRelation::DependsOn,
+            testing.clone(),
+        );
 
         // Test: Find all tasks that can be started now (dependencies completed)
-        let incomplete_tasks: Vec<_> = project
-            .access_things(|task| {
-                return if !task.access_data(|data| data.completed) {
+        let incomplete_tasks: Vec<_> = project.do_for_all_things(|task| {
+            return if !task.access(|data| data.completed) {
+                Do::Take(task.clone())
+            } else {
+                Do::Nothing
+            };
+        });
+
+        let ready_tasks: Vec<_> = incomplete_tasks
+            .iter()
+            .map(|task| {
+                if task
+                    .do_for_all_connections(|conn| {
+                        if let Ok(Direction::AwayFrom) = conn.get_direction_relative_to(task) {
+                            conn.access(|data| {
+                                return if matches!(data, TaskRelation::DependsOn) {
+                                    return if let Some(to) = conn.get_directed_towards() {
+                                        Do::Take(to.access(|data| data.completed))
+                                    } else {
+                                        Do::Nothing
+                                    };
+                                } else {
+                                    Do::Nothing
+                                };
+                            })
+                        } else {
+                            Do::Nothing
+                        }
+                    })
+                    .iter()
+                    .all(|x| *x)
+                {
                     Some(task.clone())
                 } else {
                     None
                 }
-            });
-
-        let ready_tasks: Vec<_> = incomplete_tasks.iter().map(|task| {
-            if task.access_connections(|conn| {
-                if let Some(from) = conn.get_directed_from() {
-                    return if from == *task {
-                        conn.access_data(|data| return if matches!(data,TaskRelation::DependsOn) {
-                            return if let Some(to) = conn.get_directed_towards() {
-                                Some(to.access_data(|data| data.completed))
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        })
-
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }).iter().all(|x| *x) {
-                Some(task.clone())
-            } else {
-                None
-            }
-        }).filter_map(|v| v.clone()).map(|v| v.access_data(|data| data.name.clone())).collect();
-
-
+            })
+            .filter_map(|v| v.clone())
+            .map(|v| v.access(|data| data.name.clone()))
+            .collect();
 
         // Only Auth and UI should be ready (Design is completed)
         assert!(ready_tasks.contains(&"Implement Authentication".to_string()));
@@ -1415,23 +1704,21 @@ mod tests {
 
     #[test]
     fn memory_pressure_tracking() {
-        let mut graph = Things::<String, String>::new();
+        let mut graph = Things::new();
 
         // Create some items
-        let thing1 = graph.new_thing("Thing1".to_string());
-        let thing2 = graph.new_thing("Thing2".to_string());
-        let thing3 = graph.new_thing("Thing3".to_string());
+        let thing1 = graph.new_thing("Thing1");
+        let thing2 = graph.new_thing("Thing2");
+        let thing3 = graph.new_thing("Thing3");
 
-        let _conn1 = graph.new_directed_connection(thing1.clone(), thing2.clone(), "relates".to_string());
-        let _conn2 = graph.new_directed_connection(thing2.clone(), thing3.clone(), "relates".to_string());
+        let _conn1 = graph.new_directed_connection(thing1, "relates", thing2.clone());
+        let _conn2 = graph.new_directed_connection(thing2, "relates", thing3);
 
         // Initially, no dead items
         assert_eq!(graph.dead_percentage().unwrap(), 0);
 
         // Kill one thing (should kill the thing and its connections)
-        graph.kill_things(|thing| {
-            thing.access_data(|data| data == "Thing1")
-        });
+        graph.kill_things(|thing| thing.access(|data| data == &"Thing1"));
 
         // Should have some dead percentage now
         let percentage_after_kill = graph.dead_percentage().unwrap();
@@ -1443,39 +1730,37 @@ mod tests {
         assert_eq!(graph.dead_percentage().unwrap(), 0);
 
         // Verify remaining items are still accessible
-        let remaining_things = graph.access_things(|_| Some(()));
+        let remaining_things = graph.do_for_all_things(|_| Do::Take(()));
         assert!(remaining_things.len() > 0); // Should have some things left
     }
 
     #[test]
     fn cascade_deletion_behavior() {
-        let mut graph = Things::<String, String>::new();
+        let mut graph = Things::new();
 
-        let alice = graph.new_thing("Alice".to_string());
-        let bob = graph.new_thing("Bob".to_string());
-        let charlie = graph.new_thing("Charlie".to_string());
+        let alice = graph.new_thing("Alice");
+        let bob = graph.new_thing("Bob");
+        let charlie = graph.new_thing("Charlie");
 
         // Create connections: Alice -> Bob, Bob -> Charlie
-        graph.new_directed_connection(alice.clone(), bob.clone(), "knows".to_string());
-        graph.new_directed_connection(bob.clone(), charlie.clone(), "knows".to_string());
+        graph.new_directed_connection(alice.clone(), "knows", bob.clone());
+        graph.new_directed_connection(bob.clone(), "knows", charlie.clone());
 
         // Kill Bob - this should kill Bob and all his connections
-        graph.kill_things(|thing| {
-            thing.access_data(|data| data == "Bob")
-        });
+        graph.kill_things(|thing| thing.access(|data| data == &"Bob"));
 
         // Alice and Charlie should still be alive
-        assert!(alice.access_data(|_| true)); // Can still access Alice's data
-        assert!(charlie.access_data(|_| true)); // Can still access Charlie's data
+        assert!(alice.access(|_| true)); // Can still access Alice's data
+        assert!(charlie.access(|_| true)); // Can still access Charlie's data
 
         // But Bob's connections should be dead
-        let alice_connections = alice.access_connections(|_| Some(()));
+        let alice_connections = alice.do_for_all_connections(|_| Do::Take(()));
         // Alice's connection to Bob should still exist but be marked as dead
         assert!(alice_connections.len() > 0);
 
         // After cleanup, dead connections should be removed
         graph.clean();
-        let alice_connections_after_clean = alice.access_connections(|_| Some(()));
+        let alice_connections_after_clean = alice.do_for_all_connections(|_| Do::Take(()));
         assert_eq!(alice_connections_after_clean.len(), 0); // Alice should have no live connections
     }
 
@@ -1487,18 +1772,25 @@ mod tests {
         let bob = graph.new_thing("Bob".to_string());
 
         // Create undirected friendship
-        let friendship = graph.new_undirected_connection(
-            [alice.clone(), bob.clone()],
-            "friendship".to_string()
-        );
+        let friendship =
+            graph.new_undirected_connection([alice.clone(), bob.clone()], "friendship".to_string());
+
+        let find_friendships = |thing: &Thing<_, _>| {
+            thing.do_for_all_connections(|conn| {
+                conn.access(|data| {
+                    return if data == "friendship" {
+                        Do::Take(conn.clone())
+                    } else {
+                        Do::Nothing
+                    };
+                })
+            })
+        };
+
+        let alice_friendships = find_friendships(&alice);
+        let bob_friendships = find_friendships(&bob);
 
         // Both Alice and Bob should have the same connection in their lists
-        let alice_friendships = alice.access_connections(|conn| {
-            conn.access_data(|data| return if data == "friendship" { Some(conn.clone()) } else { None })
-        });
-        let bob_friendships = bob.access_connections(|conn| {
-            conn.access_data(|data| return if data == "friendship" { Some(conn.clone()) } else { None })
-        });
 
         assert_eq!(alice_friendships.len(), 1);
         assert_eq!(bob_friendships.len(), 1);
@@ -1512,9 +1804,10 @@ mod tests {
         assert!(friendship.get_directed_towards().is_none());
 
         // Both people should be reachable from the connection using get_connected_things
-        let connected = friendship.get_connected_things();
-        let names: Vec<String> = connected.iter()
-            .map(|thing| thing.access_data(|data| data.clone()))
+        let connected = friendship.get_things();
+        let names: Vec<String> = connected
+            .iter()
+            .map(|thing| thing.access(|data| data.clone()))
             .collect();
 
         assert!(names.contains(&"Alice".to_string()));
@@ -1529,11 +1822,8 @@ mod tests {
         let employee = graph.new_thing("Employee".to_string());
 
         // Create directed management relationship
-        let manages = graph.new_directed_connection(
-            manager.clone(),
-            employee.clone(),
-            "manages".to_string()
-        );
+        let manages =
+            graph.new_directed_connection(manager.clone(), "manages".to_string(), employee.clone());
 
         // Connection should be marked as directed
         assert!(manages.is_directed());
@@ -1543,13 +1833,13 @@ mod tests {
         let from_person = manages.get_directed_from().unwrap();
         let to_person = manages.get_directed_towards().unwrap();
 
-        assert_eq!(from_person.access_data(|data| data.clone()), "Manager");
-        assert_eq!(to_person.access_data(|data| data.clone()), "Employee");
+        assert_eq!(from_person.access(|data| data.clone()), "Manager");
+        assert_eq!(to_person.access(|data| data.clone()), "Employee");
 
         // get_connected_things should return [from, to]
-        let connected = manages.get_connected_things();
-        assert_eq!(connected[0].access_data(|data| data.clone()), "Manager");
-        assert_eq!(connected[1].access_data(|data| data.clone()), "Employee");
+        let connected = manages.get_things();
+        assert_eq!(connected[0].access(|data| data.clone()), "Manager");
+        assert_eq!(connected[1].access(|data| data.clone()), "Employee");
     }
 
     #[test]
@@ -1567,21 +1857,27 @@ mod tests {
         let whiskers = knowledge.new_thing("Whiskers".to_string());
 
         // Build taxonomy relationships
-        knowledge.new_directed_connection(mammal.clone(), animal.clone(), "is_a".to_string());
-        knowledge.new_directed_connection(dog.clone(), mammal.clone(), "is_a".to_string());
-        knowledge.new_directed_connection(cat.clone(), mammal.clone(), "is_a".to_string());
+        knowledge.new_directed_connection(mammal.clone(), "is_a".to_string(), animal.clone());
+        knowledge.new_directed_connection(dog.clone(), "is_a".to_string(), mammal.clone());
+        knowledge.new_directed_connection(cat.clone(), "is_a".to_string(), mammal.clone());
 
         // Instance relationships
-        knowledge.new_directed_connection(fido.clone(), dog.clone(), "instance_of".to_string());
-        knowledge.new_directed_connection(whiskers.clone(), cat.clone(), "instance_of".to_string());
+        knowledge.new_directed_connection(fido.clone(), "instance_of".to_string(), dog.clone());
+        knowledge.new_directed_connection(whiskers.clone(), "instance_of".to_string(), cat.clone());
 
         // Query: Find all animals (instances that are transitively related to Animal)
         // This tests multi-hop traversal
         let mut animal_instances = Vec::new();
 
         // Find all instances
-        for instance_conn in knowledge.get_connections(|conn| {
-            conn.access_data(|data| return if data == "instance_of" { Some(conn.clone()) } else { None })
+        for instance_conn in knowledge.do_for_all_connections(|conn| {
+            conn.access(|data| {
+                return if data == "instance_of" {
+                    Do::Take(conn.clone())
+                } else {
+                    Do::Nothing
+                };
+            })
         }) {
             if let Some(instance) = instance_conn.get_directed_from() {
                 if let Some(species) = instance_conn.get_directed_towards() {
@@ -1590,15 +1886,22 @@ mod tests {
                     let mut is_animal = false;
 
                     // Traverse up the hierarchy
-                    for _ in 0..10 { // Prevent infinite loops
-                        if current.access_data(|data| data == "Animal") {
+                    for _ in 0..10 {
+                        // Prevent infinite loops
+                        if current.access(|data| data == "Animal") {
                             is_animal = true;
                             break;
                         }
 
                         // Find parent class
-                        if let Some(parent_conn) = current.access_a_connection(|conn| {
-                            conn.access_data(|data| return if data == "is_a" { Some(conn.clone()) } else { None })
+                        if let Some(parent_conn) = current.do_for_a_connection(|conn| {
+                            conn.access(|data| {
+                                return if data == "is_a" {
+                                    Do::Take(conn.clone())
+                                } else {
+                                    Do::Nothing
+                                };
+                            })
                         }) {
                             if let Some(parent) = parent_conn.get_directed_towards() {
                                 current = parent;
@@ -1611,7 +1914,7 @@ mod tests {
                     }
 
                     if is_animal {
-                        animal_instances.push(instance.access_data(|data| data.clone()));
+                        animal_instances.push(instance.access(|data| data.clone()));
                     }
                 }
             }
