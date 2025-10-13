@@ -231,7 +231,7 @@ impl<T: PartialEq, C: PartialEq> Thing<T, C> {
         &self,
         do_for: impl Fn(&Connection<T, C>) -> Do<R>,
     ) -> Option<R> {
-        let inner = self.inner.try_borrow().unwrap();
+        let inner = self.inner.borrow();
         for conn in inner.connections.iter() {
             if let Do::Take(value) = do_for(conn) {
                 return Some(value.clone());
@@ -1136,10 +1136,7 @@ impl<T: PartialEq, C: PartialEq> Things<T, C> {
         self.things.iter().for_each(|thing| {
             if kill(thing) {
                 let amount = thing.kill();
-                self.dead_amount = self
-                    .dead_amount
-                    .checked_add(amount)
-                    .unwrap_or_else(|| usize::MAX);
+                self.dead_amount = self.dead_amount.saturating_add(amount);
             }
         });
     }
@@ -1204,7 +1201,7 @@ impl<T: PartialEq, C: PartialEq> Things<T, C> {
         self.connections.iter().for_each(|connection| {
             if kill(connection) {
                 connection.kill();
-                let _ = self.dead_amount.saturating_add(1);
+                self.dead_amount = self.dead_amount.saturating_add(1);
             }
         });
     }
@@ -1244,18 +1241,14 @@ impl<T: PartialEq, C: PartialEq> Things<T, C> {
         let total = self
             .things
             .len()
-            .checked_add(self.connections.len())
-            .unwrap_or_else(|| usize::MAX);
+            .saturating_add(self.connections.len());
 
         if total == 0 {
             self.dead_amount = 0;
             return Err(());
         }
 
-        let multiplied = self
-            .dead_amount
-            .checked_mul(100)
-            .unwrap_or_else(|| usize::MAX);
+        let multiplied = self.dead_amount.saturating_mul(100);
 
         let divided = multiplied / total;
 
